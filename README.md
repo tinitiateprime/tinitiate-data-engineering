@@ -1,3 +1,5 @@
+![Alt text](data-engineering.png)
+
 # Tinitiate Data Engineering
 > Tinitiate.com / Venkata Bhattaram / Jay Kumsi
 
