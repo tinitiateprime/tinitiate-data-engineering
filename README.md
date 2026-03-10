@@ -7,7 +7,15 @@
 * ETL
 * Data Governence
 * Data Lineage
-* Data Quality 
+* Data Quality
+* Medallion Data Architecture
+* Data Lake
+* Lake House
+* Data Mesh
+* Data Fabric
+* Reporting
+* Data Analytics
+* MDM - Master Data Management
 ## Data Engineering with OnPrem Technologies
 ## Data Engineering with AWS
 ## Data Engineering with Azure
