@@ -4,6 +4,9 @@
 ## Introduction to Data Engineering
 ## Objectives
 ## Components
+* The components of Data Engineering, when can they be applied in what phase of the project
+* what are the pre-requsites
+* what are the available tech stacks
 * ETL
 * Data Governence
 * Data Lineage
@@ -16,6 +19,7 @@
 * Reporting
 * Data Analytics
 * MDM - Master Data Management
+  
 ## Data Engineering with OnPrem Technologies
 ## Data Engineering with AWS
 ## Data Engineering with Azure
