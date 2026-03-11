@@ -17,27 +17,20 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
 
     **Data Sources**
 
-        * Data can come from:
+        Data can come from:
 
-          * Databases
-
-          * APIs
-
-          * Streaming systems
-
-          * Log files
-
-          * CSV/JSON files
-
-          * IoT devices
+         * Databases
+         * APIs
+         * Streaming systems
+         * Log files
+         * CSV/JSON files
+         * IoT devices
 
      **Common Tasks**
 
-        * Data ingestion
-
-        * Basic metadata capture
-
-        * Storing ingestion timestamps
+       * Data ingestion
+       * Basic metadata capture
+       * Storing ingestion timestamps
 
 Maintaining historical records
 - 🥈 **Silver**: Cleansed and conformed data; transformations applied
