@@ -7,7 +7,6 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
 - 🥈 **Silver**: Cleansed and conformed data; transformations applied
 - 🥇 **Gold**: Business-grade, aggregated, and ready for analytics or serving
 
-## Examples
 
 ## Flow Diagram
 ```mermaid
