@@ -3,45 +3,55 @@
 # Tinitiate Data Engineering
 > Tinitiate.com / Venkata Bhattaram / Jay Kumsi
 
-## Components of Data Engineering
-Technical components of Data Engineering describe the pieces you assemble during different project phases. The following sections help you identify prerequisites, choose a technology stack, and understand how each component fits into the lifecycle.
+## 📋 Overview & Navigation
+Start here to explore the data engineering curriculum and supporting resources.
+
 ```mermaid
 mindmap
   root((Data Engineering<br/>Components))
     Pre-Requisites
     Technologies
-    ETL
+    Architectures
+    Data-Pipelines
     Governance
     Quality
-    Architectures
     Analytics
 ```
-* [Introduction to Data Engineering](introduction.md)
-* [Objectives](objectives.md)
+
+* 📘 [Introduction to Data Engineering](introduction.md)
+* 🎯 [Objectives](objectives.md)
 * 📝 [Prerequisites](pre-requsites.md)
 * 🧩 [Technology Stacks](tech-stacks.md)
 
-## Data Engineering Architectures
+## 🏗️ Architectural Patterns
+Explore foundational architectures used to build modern data platforms.
+* [Medallion Data Architecture](medallion-architecture.md)
+* [Data Warehouse](data-warehouse.md)
+* [Star and Snowflake Schema](star-snowflake.md)
+* [Data Lake](data-lake.md)
 
-## Layers of Data Engineering
+* [Data Pipelines](data-pipelines.md)
+
+* [Data Lake](data-lake.md)
+* [Lake House](lake-house.md)
+* [Data Mesh](data-mesh.md)
+* [Data Fabric](data-fabrick.md)
+
+## 🧱 Data Engineering Layers
+Sections describe logical stages in a data pipeline.
 * [ETL]()
 * [ELT]()
-* [Medallion Data Architecture]()
-* [Staging / Landing Zone](staging.md)
-* [Operational data store](os.md)
-* [Data Warehouse]()
-* [Data Lake]()
-* [Lake House]()
-* [Data Mesh]()
-* [Data Fabric]()
 
-## 
-* [Data Governence]()
+* [Staging / Landing Zone](staging.md)
+* [Operational Data Store](os.md)
+
+## 📜 Governance & Compliance
+* [Data Governance]()
 * [Data Lineage]()
 * [Data Quality]()
 * [MDM - Master Data Management]()
 
-## Reporting and Data Analytics
+## 📊 Reporting & Advanced Analytics
 * [Reporting]()
 * [Data Analytics](data-analytics.md)
 * [Data Analytics with AI](data-analytics-ai.md)
@@ -54,5 +64,6 @@ mindmap
 ## Data Engineering with Snowflake
 ## Data Engineering with Data Bricks
 ## Data Engineering with DBT
+
 
 
