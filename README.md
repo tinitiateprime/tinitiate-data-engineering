@@ -30,30 +30,27 @@ Explore foundational architectures used to build modern data platforms.
 * [Data Warehouse](data-warehouse.md)
 * [Star and Snowflake Schema](star-snowflake.md)
 * [Data Lake](data-lake.md)
-
 * [Data Pipelines](data-pipelines.md)
-
-* [Data Lake](data-lake.md)
 * [Lake House](lake-house.md)
 * [Data Mesh](data-mesh.md)
 * [Data Fabric](data-fabrick.md)
 
 ## 🧱 Data Engineering Layers
 Sections describe logical stages in a data pipeline.
-* [ETL]()
-* [ELT]()
+* [ETL](etl.md)
+* [ELT](elt.md)
 
 * [Staging / Landing Zone](staging.md)
-* [Operational Data Store](os.md)
+* [Operational Data Store](ods.md)
 
 ## 📜 Governance & Compliance
-* [Data Governance]()
-* [Data Lineage]()
-* [Data Quality]()
-* [MDM - Master Data Management]()
+* [Data Governance](data-governance.md)
+* [Data Lineage](data-lineage.md)
+* [Data Quality](data-quality.md)
+* [MDM - Master Data Management](mdm.md)
 
 ## 📊 Reporting & Advanced Analytics
-* [Reporting]()
+* [Reporting](reporting.md)
 * [Data Analytics](data-analytics.md)
 * [Data Analytics with AI](data-analytics-ai.md)
 * [Data Analytics with ML](data-analytics-ml.md)
@@ -65,6 +62,7 @@ Sections describe logical stages in a data pipeline.
 ## Data Engineering with Snowflake
 ## Data Engineering with Data Bricks
 ## Data Engineering with DBT
+
 
 
 
