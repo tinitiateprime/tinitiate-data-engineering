@@ -3,8 +3,7 @@
 The Medallion Architecture (also called "multi-zone" or "delta architecture") is a layered data pattern that organizes storage and processing into Bronze, Silver, and Gold zones. Each zone represents a level of refinement and trust in the data.
 
 ## Layers
-- 🥉 **Bronze Layer — Raw Zone**  -->  
-    The Bronze layer is the landing zone for raw data coming directly from source systems.
+- 🥉 **Bronze Layer — Raw Zone**  --> The Bronze layer is the landing zone for raw data coming directly from source systems.
 
     **Key Characteristics**
 
@@ -20,17 +19,17 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
 
         * Data can come from:
 
-            * **Databases**
+          * Databases
 
-            * **APIs**
+          * APIs
 
-            * **Streaming systems**
+          * Streaming systems
 
-            * **Log files**
+          * Log files
 
-            * **CSV/JSON files**
+          * CSV/JSON files
 
-            * **IoT devices**
+          * IoT devices
 
      **Common Tasks**
 
