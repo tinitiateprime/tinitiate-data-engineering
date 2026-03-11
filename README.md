@@ -16,6 +16,7 @@ mindmap
     Governance
     Quality
     Analytics
+
 ```
 
 * 📘 [Introduction to Data Engineering](introduction.md)
@@ -64,6 +65,7 @@ Sections describe logical stages in a data pipeline.
 ## Data Engineering with Snowflake
 ## Data Engineering with Data Bricks
 ## Data Engineering with DBT
+
 
 
 
