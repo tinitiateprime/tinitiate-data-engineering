@@ -8,19 +8,13 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
 
     **Key Characteristics**
 
-        *  Contains raw, unprocessed data
-
-        * Data is ingested as-is (CSV, JSON, logs, CDC streams, API dumps, IoT events)
-
-        * No cleaning, no transformation
-
-        * Often partitioned by ingestion date/time
-
-        * Used for data traceability and auditing
-
-        * Supports schema evolution
-
-        * Acts as a backup of original data
+      *  Contains raw, unprocessed data
+      * Data is ingested as-is (CSV, JSON, logs, CDC streams, API dumps, IoT events)
+      * No cleaning, no transformation
+      * Often partitioned by ingestion date/time
+      * Used for data traceability and auditing
+      * Supports schema evolution
+      * Acts as a backup of original data
 
     **Data Sources**
 
