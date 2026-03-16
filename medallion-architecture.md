@@ -3,132 +3,131 @@
 The Medallion Architecture (also called "multi-zone" or "delta architecture") is a layered data pattern that organizes storage and processing into Bronze, Silver, and Gold zones. Each zone represents a level of refinement and trust in the data.
 
 ## Layers
-- 🥉 **Bronze Layer — Raw Zone**  --> The Bronze layer is the landing zone for raw data coming directly from source systems.
+- 🥉 **Bronze Layer — Raw Zone**  --> The Bronze layer is the landing one for raw data coming directly from source systems.
 
-    **Key Characteristics**
+  **Key Characteristics**
+    * Contains raw, unprocessed data
+    * Data is ingested as-is (CSV, JSON, logs, CDC streams, API dumps, oT events)
+    * No cleaning, no transformation
+    * Often partitioned by ingestion date/time
+    * Used for data traceability and auditing
+    * Supports schema evolution
+    * Acts as a backup of original data
 
-      * Contains raw, unprocessed data
-      * Data is ingested as-is (CSV, JSON, logs, CDC streams, API dumps, IoT events)
-      * No cleaning, no transformation
-      * Often partitioned by ingestion date/time
-      * Used for data traceability and auditing
-      * Supports schema evolution
-      * Acts as a backup of original data
+   **Data Sources**
+  *  Data can come from:
+     * Databases
+     * APIs
+     * Streaming systems
+     * Log files
+     * CSV/JSON files
+     * IoT devices
 
-    **Data Sources**
+   **Common Tasks**
+   * Data ingestion
+   * Basic metadata capture
+   * Storing ingestion timestamps
+   * Maintaining historical records
 
-        Data can come from:
-
-         * Databases
-         * APIs
-         * Streaming systems
-         * Log files
-         * CSV/JSON files
-         * IoT devices
-
-     **Common Tasks**
-
-       * Data ingestion
-       * Basic metadata capture
-       * Storing ingestion timestamps
-       *  Maintaining historical records
 - 🥈 **Silver Layer — Cleansed / Conformed Zone**: The Silver layer contains cleaned, validated, and standardized data derived from the Bronze layer.
 
-      **Key Characteristics**
-       * Contains cleaned and validated data
-       * Data quality checks are applied
-       * Handles duplicates, null values, and incorrect formats
-       * Standardizes data types and naming conventions
-       * Combines data from multiple Bronze sources
-       * Enforces basic business rules
-       * Provides reliable datasets for further processing
-       * Data becomes structured and analytics-ready
+   **Key Characteristics**
+   * Contains cleaned and validated data
+   * Data quality checks are applied
+   * Handles duplicates, null values, and incorrect formats
+   * Standardizes data types and naming conventions
+   * Combines data from multiple Bronze sources
+   * Enforces basic business rules
+   * Provides reliable datasets for further processing
+   * Data becomes structured and analytics-ready
 
-      **Typical Transformations**
-       * Deduplication of records
-       * Standardizing formats (dates, currencies, units)
-       * Data type corrections
-       * Handling missing or null values
-       * Joining datasets from multiple sources
-       * Data validation and filtering
-       * Applying business rules
+   **Typical Transformations**
+   * Deduplication of records
+   * Standardizing formats (dates, currencies, units)
+   * Data type corrections
+   * Handling missing or null values
+   * Joining datasets from multiple sources
+   * Data validation and filtering
+   * Applying business rules
 
-      **Data Sources**
-        * Data primarily comes from:
-           * Bronze layer datasets
-           * Raw event streams
-           * Application data
-           * External data sources
+   **Data Sources**
+   * Data primarily comes from:
+     * Bronze layer datasets
+     * Raw event streams
+     * Application data
+     * External data sources
 
-      **Common Tasks**
-        * Data cleaning and validation
-        * Deduplication
-        * Schema enforcement
-        * Data standardization
-        * Data enrichment
-        * Integrating datasets from multiple sources
+   **Common Tasks**
+     * Data cleaning and validation
+     * Deduplication
+     * Schema enforcement
+     * Data standardization
+     * Data enrichment
+     * Integrating datasets from multiple sources
+
 - 🥇 **Gold Layer — Business / Analytics Zone**: The Gold layer contains business-ready, highly curated datasets designed for reporting, dashboards, and advanced   analytics.
 
-      **Key Characteristics**
-        * Contains aggregated and business-level data
-        * Optimized for analytics and reporting
-        * Organized into fact and dimension tables
-        * Highly curated and trusted datasets
-        * Designed for fast query performance
-        * Used directly by business users and analysts
-        *  Often represents KPIs and business metrics
+   **Key Characteristics**
+   * Contains aggregated and business-level data
+   * Optimized for analytics and reporting
+   * Organized into fact and dimension tables
+   * Highly curated and trusted datasets
+   * Designed for fast query performance
+   * Used directly by business users and analysts
+   *  Often represents KPIs and business metrics
 
-       **Typical Data Models**
-        * Fact tables
-        * Dimension tables
-        * Aggregated datasets
-        * Data marts
-        * KPI tables
-        * Feature tables for machine learning
+   **Typical Data Models**
+   * Fact tables
+   * Dimension tables
+   * Aggregated datasets
+   * Data marts
+   * KPI tables
+   * Feature tables for machine learning
       
-      **Data Sources**
-        * Data is derived from:
-        * Silver layer datasets
-        * Cleaned and validated enterprise data
+   **Data Sources**
+   * Data is derived from:
+   * Silver layer datasets
+   * Cleaned and validated enterprise data
 
-      **Common Tasks**
-        * Data aggregation
-        * Business metric calculations
-        * Creating fact and dimension tables
-        * Building data marts
-        * 0Preparing datasets for dashboards
-        * Preparing features for machine learning
+   **Common Tasks**
+   * Data aggregation
+   * Business metric calculations
+   * Creating fact and dimension tables
+   * Building data marts
+   * 0Preparing datasets for dashboards
+   * Preparing features for machine learning
+
  💎 **Platinum Layer — Semantic / AI / Serving Zone**: The Platinum layer is the highest level of data refinement, designed for advanced analytics, machine learning models, semantic layers, and application APIs.
 
-      **Key Characteristics**
+   **Key Characteristics**
+   * Built on top of Gold datasets
+   * Contains domain-specific or application-ready datasets
+   * Optimized for AI, ML, and operational use cases
+   * Often contains feature tables or semantic models
+   * Used by applications, AI systems, and advanced analytics
+   * Very highly curated and governed
 
-       * Built on top of Gold datasets
-       * Contains domain-specific or application-ready datasets
-       * Optimized for AI, ML, and operational use cases
-       * Often contains feature tables or semantic models
-       * Used by applications, AI systems, and advanced analytics
-       * Very highly curated and governed
+  **Typical Data Models**
+   * Machine learning feature tables
+   * Semantic models
+   * API-ready datasets
+   * AI feature stores
+   * Real-time serving tables
+   * Recommendation datasets
 
-      **Typical Data Models**
-       * Machine learning feature tables
-       * Semantic models
-       * API-ready datasets
-       * AI feature stores
-       * Real-time serving tables
-       * Recommendation datasets
+  **Data Sources**
+  * Data is derived from:
+  * Gold layer datasets
+  * Business metrics and curated data marts
 
-      **Data Sources**
-       * Data is derived from:
-       * Gold layer datasets
-       * Business metrics and curated data marts
+  **Common Tasks**
+  * Feature engineering for ML models
+  * Semantic layer creation
+  * Data product creation
+  * API dataset preparation
+  * Real-time serving datasets
+  * Advanced analytics datasets
 
-      **Common Tasks**
-      * Feature engineering for ML models
-      * Semantic layer creation
-      * Data product creation
-      * API dataset preparation
-      * Real-time serving datasets
-      * Advanced analytics datasets
 ## Flow Diagram
 ```mermaid
 flowchart LR
