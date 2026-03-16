@@ -403,41 +403,41 @@ mindmap
 
 **Implementation Notes**
 
-   **Common platforms**
+ **Common platforms**
   * Databricks / Delta Lake
   * Snowflake
   * AWS S3 + Spark / Glue
   * Azure Data Lake + Databricks / Synapse
   * GCP Cloud Storage + Dataproc / BigQuery
 
-   **Common processing engines**
-  * Apache Spark
-  * Databricks
-  * Snowflake pipelines
-  * AWS Glue
-  * Azure Data Factory + Synapse
-  * dbt for transformations in warehouse-based models
+ **Common processing engines**
+ * Apache Spark
+ * Databricks
+ * Snowflake pipelines
+ * AWS Glue
+ * Azure Data Factory + Synapse
+ * dbt for transformations in warehouse-based models
 
-   **Common orchestration tools**
+ **Common orchestration tools**
   * Airflow
   * Prefect
   * Azure Data Factory pipelines
   * AWS Step Functions
   * Dagster
 
-   **Design practices**
+ **Design practices**
   * Keep Bronze as close to source as possible
   * Apply cleaning, deduplication, and standardization in Silver
   * Build business-focused aggregated datasets in Gold
   * Maintain metadata, lineage, and timestamps
   * Add validation and quality checks at each layer
 
-   **Storage guidance**
+ **Storage guidance**
    * Bronze data is usually append-only
    * Silver may contain cleaned and merged datasets
    * Gold is optimized for reporting, KPIs, and analytics
 
-   **Governance guidance**
+ **Governance guidance**
    * Track data lineage
    * Apply schema validation
    * Control access by layer
