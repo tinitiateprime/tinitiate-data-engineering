@@ -31,8 +31,7 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
        * Data ingestion
        * Basic metadata capture
        * Storing ingestion timestamps
-
-Maintaining historical records
+       *  Maintaining historical records
 - 🥈 **Silver Layer — Cleansed / Conformed Zone**: The Silver layer contains cleaned, validated, and standardized data derived from the Bronze layer.
 
       **Key Characteristics**
@@ -68,8 +67,6 @@ Maintaining historical records
         * Data standardization
         * Data enrichment
         * Integrating datasets from multiple sources
-
-
 - 🥇 **Gold Layer — Business / Analytics Zone**: The Gold layer contains business-ready, highly curated datasets designed for reporting, dashboards, and advanced   analytics.
 
       **Key Characteristics**
@@ -101,7 +98,6 @@ Maintaining historical records
         * Building data marts
         * 0Preparing datasets for dashboards
         * Preparing features for machine learning
-
  💎 **Platinum Layer — Semantic / AI / Serving Zone**: The Platinum layer is the highest level of data refinement, designed for advanced analytics, machine learning models, semantic layers, and application APIs.
 
       **Key Characteristics**
@@ -133,7 +129,6 @@ Maintaining historical records
       * API dataset preparation
       * Real-time serving datasets
       * Advanced analytics datasets
-
 ## Flow Diagram
 ```mermaid
 flowchart LR
@@ -333,7 +328,7 @@ mindmap
     * Plant performance summaries
     * Customer billing and consumption analytics
 
-   **Why it matters in power**
+    **Why it matters in power**
     * Huge volume of time-series data
     * Real-time and batch data must be managed together
     * Trusted data is needed for planning, billing, and operational decisions
