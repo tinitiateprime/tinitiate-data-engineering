@@ -314,57 +314,57 @@ mindmap
 **Power / Energy**
   * Use case: Power generation, consumption, and grid analytics
 
-   **Bronze**
-   * Smart meter readings
-   * Grid sensor data
-   * Power plant generation logs
-   * Outage records
-   * Billing and customer consumption data
+    **Bronze**
+    * Smart meter readings
+    * Grid sensor data
+    * Power plant generation logs
+    * Outage records
+    * Billing and customer consumption data
 
-   **Silver**
-   * Cleaned and time-aligned meter data
-   * Standardized customer and facility records
-   * Validated outage and generation events
-   * Joined operational and billing datasets
+    **Silver**
+    * Cleaned and time-aligned meter data
+    * Standardized customer and facility records
+    * Validated outage and generation events
+    * Joined operational and billing datasets
 
-   **Gold**
-   * Energy usage dashboards
-   * Load forecasting datasets
-   * Plant performance summaries
-   * Customer billing and consumption analytics
+    **Gold**
+    * Energy usage dashboards
+    * Load forecasting datasets
+    * Plant performance summaries
+    * Customer billing and consumption analytics
 
    **Why it matters in power**
-   * Huge volume of time-series data
-   * Real-time and batch data must be managed together
-   * Trusted data is needed for planning, billing, and operational decisions
+    * Huge volume of time-series data
+    * Real-time and batch data must be managed together
+    * Trusted data is needed for planning, billing, and operational decisions
 
 **Pharmaceuticals**
 
   * Use case: Drug manufacturing, quality, and supply chain analytics
 
-  **Bronze**
-  * Batch manufacturing records
-  * Lab test results
-  * Clinical trial feeds
-  * Supply chain and shipment logs
-  * Regulatory reporting data
+    **Bronze**
+    * Batch manufacturing records
+    * Lab test results
+    * Clinical trial feeds
+    * Supply chain and shipment logs
+    * Regulatory reporting data
 
-  **Silver**
-  * Cleaned batch and product records
-  * Standardized trial and lab data
-  * Quality validation checks
-  * Joined manufacturing, testing, and supply data
+    **Silver**
+    * Cleaned batch and product records
+    * Standardized trial and lab data
+    * Quality validation checks
+    * Joined manufacturing, testing, and supply data
 
-  **Gold**
-  * Quality compliance dashboards
-  * Batch performance summaries
-  * Clinical analytics datasets
-  * Supply chain monitoring reports
+    **Gold**
+    * Quality compliance dashboards
+    * Batch performance summaries
+    * Clinical analytics datasets
+    * Supply chain monitoring reports
 
-  **Why it matters in pharmaceuticals**
-  * Data accuracy and traceability are extremely important
-  * Regulatory compliance requires strong lineage
-  * Multiple teams need trusted, business-ready data
+    **Why it matters in pharmaceuticals**
+    * Data accuracy and traceability are extremely important
+    * Regulatory compliance requires strong lineage
+    * Multiple teams need trusted, business-ready data
 
 **Advantages of Medallion Architecture**
 * Clear separation of data stages
@@ -409,43 +409,42 @@ mindmap
 
 **Implementation Notes**
 
-**Common platforms**
+   **Common platforms**
+  * Databricks / Delta Lake
+  * Snowflake
+  * AWS S3 + Spark / Glue
+  * Azure Data Lake + Databricks / Synapse
+  * GCP Cloud Storage + Dataproc / BigQuery
 
-* Databricks / Delta Lake
-* Snowflake
-* AWS S3 + Spark / Glue
-* Azure Data Lake + Databricks / Synapse
-* GCP Cloud Storage + Dataproc / BigQuery
+   **Common processing engines**
+  * Apache Spark
+  * Databricks
+  * Snowflake pipelines
+  * AWS Glue
+  * Azure Data Factory + Synapse
+  * dbt for transformations in warehouse-based models
 
-**Common processing engines**
-* Apache Spark
-* Databricks
-* Snowflake pipelines
-* AWS Glue
-* Azure Data Factory + Synapse
-* dbt for transformations in warehouse-based models
+   **Common orchestration tools**
+  * Airflow
+  * Prefect
+  * Azure Data Factory pipelines
+  * AWS Step Functions
+  * Dagster
 
-**Common orchestration tools**
-* Airflow
-* Prefect
-* Azure Data Factory pipelines
-* AWS Step Functions
-* Dagster
+   **Design practices**
+  * Keep Bronze as close to source as possible
+  * Apply cleaning, deduplication, and standardization in Silver
+  * Build business-focused aggregated datasets in Gold
+  * Maintain metadata, lineage, and timestamps
+  * Add validation and quality checks at each layer
 
-**Design practices**
-* Keep Bronze as close to source as possible
-* Apply cleaning, deduplication, and standardization in Silver
-* Build business-focused aggregated datasets in Gold
-* Maintain metadata, lineage, and timestamps
-* Add validation and quality checks at each layer
+   **Storage guidance**
+   * Bronze data is usually append-only
+   * Silver may contain cleaned and merged datasets
+   * Gold is optimized for reporting, KPIs, and analytics
 
-**Storage guidance**
-* Bronze data is usually append-only
-* Silver may contain cleaned and merged datasets
-* Gold is optimized for reporting, KPIs, and analytics
-
-**Governance guidance**
-* Track data lineage
-* Apply schema validation
-* Control access by layer
-* Maintain audit history for sensitive domains
+   **Governance guidance**
+   * Track data lineage
+   * Apply schema validation
+   * Control access by layer
+   * Maintain audit history for sensitive domains
