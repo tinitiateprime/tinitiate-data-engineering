@@ -1,16 +1,18 @@
 # Data Sets
 * Data Model
-* Postgres
+* Postgres DDLs
+* Snowflake DDLs
+* SQL Server DDLs
+* Data Generators for each DDL
+  * Parquet files
+  * csv files
+  * json files
+* Web Service Generators    
 ## Retail
-* Give me Data sets 
 ## HealthCare
-
 ## Logistics
-
 ## Clinical Trials
-
 ## Financial
-
 ## Pharma
 
 
