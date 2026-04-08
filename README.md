@@ -55,10 +55,13 @@ Sections describe logical stages in a data pipeline.
 * [Data Analytics with AI](data-analytics-ai.md)
 * [Data Analytics with ML](data-analytics-ml.md)
   
-## Data Engineering with OnPrem Technologies
-## Data Engineering with AWS
-## Data Engineering with Azure
-## Data Engineering with GCP
-## Data Engineering with Snowflake
-## Data Engineering with Data Bricks
-## Data Engineering with DBT
+## 🏢 Data Engineering with OnPrem Technologies
+* [On-Premises Data Engineering](data-engineering-onprem.md)
+
+## ☁️ Data Engineering with Cloud Technologies
+* [AWS Data Engineering](data-engineering-aws.md)
+* [Azure Data Engineering](data-engineering-azure.md)
+* [GCP Data Engineering](data-engineering-gcp.md)
+* [Snowflake](data-engineering-snowflake.md)
+* [Databricks](data-engineering-databricks.md)
+* [dbt (Data Build Tool)](data-engineering-dbt.md)
