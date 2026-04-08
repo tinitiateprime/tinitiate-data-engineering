@@ -33,7 +33,7 @@ Explore foundational architectures used to build modern data platforms.
 * [Data Pipelines](data-pipelines.md)
 * [Lake House](lake-house.md)
 * [Data Mesh](data-mesh.md)
-* [Data Fabric](data-fabrick.md)
+* [Data Fabric](data-fabric.md)
 
 ## 🧱 Data Engineering Layers
 Sections describe logical stages in a data pipeline.
@@ -62,8 +62,3 @@ Sections describe logical stages in a data pipeline.
 ## Data Engineering with Snowflake
 ## Data Engineering with Data Bricks
 ## Data Engineering with DBT
-
-
-
-
-
