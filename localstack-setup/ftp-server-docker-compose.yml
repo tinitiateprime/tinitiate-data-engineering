@@ -1,0 +1,9 @@
+version: "3.8"
+
+services:
+  downloader:
+    image: alpine:3.19
+    command: >
+      sh -c "wget -O /data/file.zip https://github.com/USERNAME/REPO/archive/refs/heads/main.zip"
+    volumes:
+      - ./data:/data
