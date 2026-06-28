@@ -1,0 +1,65 @@
+# DE Content Tasks
+
+## Base  Turorials for (PySpark,DBt, Glue, -Databricks )
+* SQLAlchemy, PyPika(ORM)
+* All SQL operations
+    * Use EMP data (CSVs/Parquet) for
+    * With dataframes
+    * With SQL injection/embedded SQL
+* ETL
+    * Use Retail
+        * Product_type, Products, stores, customers, Customer_bills,Customer_bill_details
+        * https://github.com/tinitiateprime/python-assignments/tree/main/POS_BillingAndProcessing/Billing
+    * Batch
+        * Datalake, Data Base
+            * Load Parent Data
+            * Load Transactional Data
+            * Incremental Data
+            * Calculate
+            * Populate Reports/Gold Layer
+            * Error Handling
+                * File/Folder issues
+                * Data Issues
+                * Performance Issues
+            * Schecduled Job, Every 15 Mins,..
+
+
+
+## Project
+* Retail Banking
+* Tables
+    * Customers
+    * Account Types
+        * Savings
+        * Checking
+        * Loans
+            * Credit Cards
+            * Auto Loans
+            * Home Loans
+            * Personal Loans
+    * customer-accounts
+    * customer account transactions
+* Source Data Generators for the above tables
+    * Parquet (upto 1M rows per file)
+    * CSV (upto 1M rows per file)
+    * ORC 
+    * JSONs
+* Master data
+    * Account Type
+    * Loan Types
+* Slowly Changing Data
+    * new Customers
+    * new Customers Acconts (100000)
+* Rapid Data Transactional data (1 Million)
+    * Loan Payments
+    * CC/DC transactions
+
+## Data Setup
+* Source Data Folder for Batch
+* Code to Drop data in minIO
+* Source Data Message Queues for Real-Time
+* Code put data in MQ
+
+## ETL
+### Target Table DDL 
+### Data Lake Strcture
