@@ -2,6 +2,8 @@
 
 **Data Lineage** is the lifecycle map of data. It tracks data's origin, what happens to it, and where it moves over time. It provides visibility into the "Who, What, When, Where, and Why" of your data pipelines.
 
+For a practical implementation, see the [OpenMetadata Data Lineage Lab](data-engineering-data-lineage/README.md), which covers platform architecture, metadata ingestion, automated lineage, API-based lineage, and troubleshooting.
+
 ## 🎯 Key Use Cases
 
 1. **💥 Impact Analysis (Proactive)**

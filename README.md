@@ -3,6 +3,8 @@
 # Tinitiate Data Engineering
 > Tinitiate.com / Venkata Bhattaram / Jay Kumsi
 
+[🏠 Tinitiate Home](https://tinitiate.com)
+
 ## 📋 Overview & Navigation
 Start here to explore the data engineering curriculum and supporting resources.
 
@@ -45,7 +47,7 @@ Sections describe logical stages in a data pipeline.
 
 ## 📜 Governance & Compliance
 * [Data Governance](data-governance.md)
-* [Data Lineage](data-lineage.md)
+* [Data Lineage & OpenMetadata](data-lineage.md)
 * [Data Quality](data-quality.md)
 * [MDM - Master Data Management](mdm.md)
 
