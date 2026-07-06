@@ -31,7 +31,7 @@ Data Engineers enable Data Analysts and Data Scientists by providing the infrast
 
 ```mermaid
 flowchart TD
-    A[(Data Lakehouse)] -->|SQL / PySpark| B(Exploratory Data Analysis<br>EDA)
+    A[(Data Lakehouse)] -->|SQL / PySpark| B("Exploratory Data Analysis<br/>EDA")
     B --> C{Hypothesis Testing}
     
     C -->|Validated| D[Feature Engineering]

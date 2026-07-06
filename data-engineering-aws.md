@@ -27,10 +27,10 @@ Amazon Web Services (AWS) is the oldest and most widely adopted cloud platform. 
 
 ```mermaid
 flowchart LR
-    A[App DB (RDS)] -->|DMS| B[(S3 Raw Bucket)]
+    A["App DB (RDS)"] -->|DMS| B[("S3 Raw Bucket")]
     C[Web Logs] -->|Kinesis Firehose| B
     
-    B --> D{AWS Glue ETL<br>PySpark}
+    B --> D{"AWS Glue ETL<br/>PySpark"}
     D -->|Clean & Partition| E[(S3 Curated Bucket)]
     
     E -->|Glue Crawler| F[Glue Data Catalog]

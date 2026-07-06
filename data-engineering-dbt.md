@@ -38,7 +38,7 @@ flowchart LR
     end
     
     subgraph Output
-        F[(Gold Tables<br>for BI)]
+        F[(Gold Tables<br/>for BI)]
     end
     
     E --> F

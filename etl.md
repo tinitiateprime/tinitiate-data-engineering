@@ -25,7 +25,7 @@ In ETL, the data is transformed **before** it enters the destination storage.
 
 ```mermaid
 flowchart LR
-    A[Sources] -->|Extract| B(Transform Engine<br>Spark / Talend)
+    A[Sources] -->|Extract| B("Transform Engine<br/>Spark / Talend")
     B -->|Clean / Aggregate / Join| C[Load]
     C --> D[(Data Warehouse)]
 

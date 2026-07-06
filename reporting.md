@@ -23,7 +23,7 @@ During an interview, emphasize that you don't just "build pipelines"; you optimi
 
 ```mermaid
 flowchart LR
-    A[(Data Warehouse<br>Gold / Marts)] -->|Extract/Query| B{Semantic Layer<br>LookML / dbt}
+    A[(Data Warehouse<br/>Gold / Marts)] -->|Extract/Query| B{"Semantic Layer<br/>LookML / dbt"}
     B --> C[BI Tool Cache / Engine]
     
     C --> D[📈 Executive Dashboards]

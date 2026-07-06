@@ -25,9 +25,9 @@ flowchart TD
     end
     
     subgraph Compute Layer / Virtual Warehouses
-        D(Marketing VW<br>Size: S) 
-        E(Data Engineering VW<br>Size: XL)
-        F(Finance VW<br>Size: M)
+        D("Marketing VW<br/>Size: S")
+        E("Data Engineering VW<br/>Size: XL")
+        F("Finance VW<br/>Size: M")
     end
     
     subgraph Centralized Storage Layer

@@ -27,7 +27,7 @@ flowchart LR
     A[Web / Mobile Apps] -->|Streaming Events| B[Cloud Pub/Sub]
     C[Database Exports] -->|Batch Files| D[(Cloud Storage GCS)]
     
-    B --> E{Cloud Dataflow<br>Apache Beam}
+    B --> E{"Cloud Dataflow<br/>Apache Beam"}
     D --> E
     
     E -->|Clean & Transform| F[(BigQuery)]

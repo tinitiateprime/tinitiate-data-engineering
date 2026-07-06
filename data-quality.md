@@ -17,12 +17,12 @@ In modern pipelines, DQ checks are treated like **unit tests for data**.
 
 ```mermaid
 flowchart TD
-    A[Raw Data Ingestion] --> B{DQ Check 1:<br>Null & Type Validations}
+    A[Raw Data Ingestion] --> B{"DQ Check 1:<br/>Null & Type Validations"}
     
     B -->|Pass| C[Silver/Cleaned Layer]
     B -->|Fail| D[🚨 Dead Letter Queue / Quarantine]
     
-    C --> E{DQ Check 2:<br>Business Rules & Duplicates}
+    C --> E{"DQ Check 2:<br/>Business Rules & Duplicates"}
     
     E -->|Pass| F[Gold/Business Layer]
     E -->|Fail| D

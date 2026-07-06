@@ -110,12 +110,12 @@ mindmap
       Database optimization and tuning
     Key Skills
       SQL and NoSQL databases
-      Programming (Python, Java, Scala)
+      Programming: Python, Java, Scala
       Data processing frameworks
     Tools & Technologies
       Apache Spark, Kafka
-      Cloud data services (AWS, Azure, GCP)
-      ETL tools (Informatica, Talend)
+      Cloud data services: AWS, Azure, GCP
+      ETL tools: Informatica, Talend
 ```
 
 
@@ -151,12 +151,12 @@ mindmap
       Performance optimization
     Key Skills
       Workflow orchestration
-      Containerization (Docker, Kubernetes)
+      Containerization: Docker, Kubernetes
       Infrastructure automation
     Tools & Technologies
       Apache Airflow, Prefect
       Jenkins, GitLab CI
-      Monitoring tools (Prometheus, Grafana)
+      Monitoring tools: Prometheus, Grafana
 ```
 
 #### Big Data Engineer
@@ -216,7 +216,7 @@ mindmap
     Tools & Technologies
       Docker, Kubernetes
       Jenkins, GitHub Actions
-      Testing tools (Great Expectations)
+      Testing tools: Great Expectations
 ```
 
 #### FinOps Engineer

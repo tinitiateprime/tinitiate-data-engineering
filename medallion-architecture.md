@@ -131,10 +131,10 @@ The Medallion Architecture (also called "multi-zone" or "delta architecture") is
 ## Flow Diagram
 ```mermaid
 flowchart LR
-    A[Source Systems<br>Databases / APIs / Files / Streams] --> B[Bronze Zone<br>Raw Data Ingestion]
-    B --> C[Silver Zone<br>Cleaned & Validated Data]
-    C --> D[Gold Zone<br>Business Aggregations]
-    D --> E[Platinum Zone<br>AI / Semantic Layer]
+    A[Source Systems<br/>Databases / APIs / Files / Streams] --> B[Bronze Zone<br/>Raw Data Ingestion]
+    B --> C[Silver Zone<br/>Cleaned & Validated Data]
+    C --> D[Gold Zone<br/>Business Aggregations]
+    D --> E[Platinum Zone<br/>AI / Semantic Layer]
     E --> F[BI / ML / Applications / APIs]
 
     style A fill:#37474F,color:#ffffff

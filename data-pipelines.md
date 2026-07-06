@@ -29,12 +29,12 @@ A **Data Pipeline** is a set of automated processes that extract data from vario
 
 ```mermaid
 flowchart LR
-    A[🗄️ Sources<br>APIs / DBs / Logs] --> B[📥 Ingestion Layer]
-    B --> C[⚙️ Processing Layer<br>Data Validation & Transformation]
-    C --> D[📤 Storage Layer<br>Warehouse / Lake]
-    D --> E[📊 Consumption<br>BI / ML Models]
+    A[🗄️ Sources<br/>APIs / DBs / Logs] --> B[📥 Ingestion Layer]
+    B --> C[⚙️ Processing Layer<br/>Data Validation & Transformation]
+    C --> D[📤 Storage Layer<br/>Warehouse / Lake]
+    D --> E[📊 Consumption<br/>BI / ML Models]
     
-    O[⏰ Orchestration & Monitoring<br>Airflow / Dagster] -.-> B
+    O[⏰ Orchestration & Monitoring<br/>Airflow / Dagster] -.-> B
     O -.-> C
     O -.-> D
 

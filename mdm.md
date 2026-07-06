@@ -28,13 +28,13 @@ MDM's primary goal is to resolve these identities and create a **Golden Record**
 ```mermaid
 flowchart LR
     subgraph Source Systems
-        A[CRM<br>Salesforce]
-        B[Billing<br>Stripe]
-        C[Support<br>Zendesk]
+        A[CRM<br/>Salesforce]
+        B[Billing<br/>Stripe]
+        C[Support<br/>Zendesk]
     end
 
     subgraph MDM Hub
-        D{Matching &<br>Deduplication}
+        D{"Matching &<br/>Deduplication"}
         E[🏆 Golden Record]
     end
     

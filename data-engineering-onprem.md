@@ -35,11 +35,11 @@ If asked to compare Cloud vs On-Prem, focus on **Scalability and Cost**:
 
 ```mermaid
 flowchart LR
-    A[Source DBs<br>Oracle / SQL Server] -->|Sqoop / CDC| B[(HDFS<br>Raw Data)]
+    A[Source DBs<br/>Oracle / SQL Server] -->|Sqoop / CDC| B[(HDFS<br/>Raw Data)]
     C[Logs / APIs] -->|Kafka| B
     
-    B --> D(Apache Spark<br>on YARN)
-    D --> E[(Hive / Teradata<br>Data Warehouse)]
+    B --> D("Apache Spark<br/>on YARN")
+    D --> E[(Hive / Teradata<br/>Data Warehouse)]
     
     E --> F[Tableau / MicroStrategy]
     

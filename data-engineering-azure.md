@@ -25,15 +25,15 @@ Microsoft Azure is highly popular in enterprise environments, especially for com
 
 ```mermaid
 flowchart LR
-    A[On-Prem SQL Server] -->|ADF Integration Runtime| B[(ADLS Gen2<br>Bronze)]
+    A[On-Prem SQL Server] -->|ADF Integration Runtime| B[(ADLS Gen2<br/>Bronze)]
     C[IoT Devices] -->|Event Hubs| B
     
-    B --> D{Azure Databricks<br>Spark / Delta}
+    B --> D{"Azure Databricks<br/>Spark / Delta"}
     
-    D -->|Clean| E[(ADLS Gen2<br>Silver)]
-    D -->|Aggregate| F[(ADLS Gen2<br>Gold)]
+    D -->|Clean| E[(ADLS Gen2<br/>Silver)]
+    D -->|Aggregate| F[(ADLS Gen2<br/>Gold)]
     
-    F --> G[(Synapse Analytics<br>Dedicated SQL Pool)]
+    F --> G[(Synapse Analytics<br/>Dedicated SQL Pool)]
     G --> H[📊 Power BI]
 
     style B fill:#bbdefb,stroke:#1565c0

@@ -27,10 +27,10 @@ flowchart TD
     B[📊 Semi-structured Data] --> D
     C[🗄️ Structured Data] --> D
     
-    subgraph Lakehouse [Lakehouse Storage Layer<br>Delta / Iceberg / Hudi]
-        D --> E[🥉 Bronze<br>Raw]
-        E --> F[🥈 Silver<br>Cleaned & Conformed]
-        F --> G[🥇 Gold<br>Aggregated]
+    subgraph Lakehouse [Lakehouse Storage Layer<br/>Delta / Iceberg / Hudi]
+        D --> E[🥉 Bronze<br/>Raw]
+        E --> F[🥈 Silver<br/>Cleaned & Conformed]
+        F --> G[🥇 Gold<br/>Aggregated]
     end
     
     G --> H[📈 BI & Dashboards]

@@ -20,13 +20,13 @@ Databricks is famous for popularizing the Medallion Architecture.
 
 ```mermaid
 flowchart LR
-    A[Raw Data<br>Kafka / S3 / APIs] -->|Auto Loader| B[(🥉 Bronze<br>Raw Delta Table)]
+    A[Raw Data<br/>Kafka / S3 / APIs] -->|Auto Loader| B[(🥉 Bronze<br/>Raw Delta Table)]
     
-    B -->|Spark / Python| C[(🥈 Silver<br>Cleaned Delta Table)]
+    B -->|Spark / Python| C[(🥈 Silver<br/>Cleaned Delta Table)]
     
-    C -->|Spark SQL / Aggregations| D[(🥇 Gold<br>Curated Delta Table)]
+    C -->|Spark SQL / Aggregations| D[(🥇 Gold<br/>Curated Delta Table)]
     
-    D --> E[Databricks SQL<br>Dashboards / BI]
+    D --> E[Databricks SQL<br/>Dashboards / BI]
     D --> F[MLflow / AI Models]
 
     style B fill:#cd7f32,stroke:#5d4037
