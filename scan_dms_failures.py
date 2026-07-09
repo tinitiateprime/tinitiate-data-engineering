@@ -1,21 +1,19 @@
-
-import psycopg2
+import sys
 
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 
-import sys
 
-args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 
 job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
+job.init(args["JOB_NAME"], args)
 
 #############################################################
 # CONFIGURATION
@@ -49,10 +47,6 @@ PRIMARY_KEYS = [
     "mod_no"
 ]
 
-#############################################################
-# JDBC Properties
-#############################################################
-
 jdbc_props = {
     "user": USERNAME,
     "password": PASSWORD,
@@ -60,7 +54,25 @@ jdbc_props = {
 }
 
 #############################################################
-# STEP-1 Read Bronze
+# Helper to run SQL on Silver DB using JDBC
+#############################################################
+
+def run_sql(sql):
+    conn = spark._sc._gateway.jvm.java.sql.DriverManager.getConnection(
+        SILVER_JDBC,
+        USERNAME,
+        PASSWORD
+    )
+    stmt = conn.createStatement()
+    try:
+        stmt.execute(sql)
+    finally:
+        stmt.close()
+        conn.close()
+
+
+#############################################################
+# STEP 1 - Read Bronze
 #############################################################
 
 print("Reading Bronze table...")
@@ -71,35 +83,24 @@ bronze_df = spark.read.jdbc(
     properties=jdbc_props
 )
 
-print("Bronze Count :", bronze_df.count())
+bronze_count = bronze_df.count()
+print("Bronze Count:", bronze_count)
 
 #############################################################
-# STEP-2 Truncate Stage
+# STEP 2 - Truncate Stage
 #############################################################
 
-silver_conn = psycopg2.connect(
-    host=SILVER_HOST,
-    port=SILVER_PORT,
-    database=SILVER_DB,
-    user=USERNAME,
-    password=PASSWORD
-)
+print("Truncating Stage table...")
 
-silver_conn.autocommit = False
-
-cursor = silver_conn.cursor()
-
-cursor.execute(f"""
-TRUNCATE TABLE "{STAGE_SCHEMA}"."{TABLE}_stage";
-""")
-
-silver_conn.commit()
+run_sql(f'TRUNCATE TABLE "{STAGE_SCHEMA}"."{TABLE}_stage";')
 
 print("Stage truncated.")
 
 #############################################################
-# STEP-3 Load Stage
+# STEP 3 - Load Stage
 #############################################################
+
+print("Loading Bronze data into Stage...")
 
 bronze_df.write.jdbc(
     url=SILVER_JDBC,
@@ -111,67 +112,57 @@ bronze_df.write.jdbc(
 print("Loaded into Stage.")
 
 #############################################################
-# STEP-4 Merge
+# STEP 4 - Merge Stage into Silver
 #############################################################
 
 columns = bronze_df.columns
 
-insert_cols = ",".join([f'"{c}"' for c in columns])
-
-select_cols = ",".join([f'"{c}"' for c in columns])
-
-conflict_cols = ",".join([f'"{c}"' for c in PRIMARY_KEYS])
+insert_cols = ", ".join([f'"{c}"' for c in columns])
+select_cols = ", ".join([f'"{c}"' for c in columns])
+conflict_cols = ", ".join([f'"{c}"' for c in PRIMARY_KEYS])
 
 update_cols = []
 
 for c in columns:
-
     if c not in PRIMARY_KEYS:
+        update_cols.append(f'"{c}" = EXCLUDED."{c}"')
 
-        update_cols.append(
-            f'''"{c}" = EXCLUDED."{c}"'''
-        )
-
-update_sql = ",\n".join(update_cols)
+update_sql = ",\n    ".join(update_cols)
 
 merge_sql = f"""
 INSERT INTO "{TARGET_SCHEMA}"."{TABLE}"
-({insert_cols})
-
+(
+    {insert_cols}
+)
 SELECT
-{select_cols}
-
+    {select_cols}
 FROM "{STAGE_SCHEMA}"."{TABLE}_stage"
-
 ON CONFLICT ({conflict_cols})
-
 DO UPDATE
 SET
-
-{update_sql};
+    {update_sql};
 """
 
 print("Running Merge...")
 
-cursor.execute(merge_sql)
+run_sql(merge_sql)
 
-silver_conn.commit()
+print("Merge completed.")
 
 #############################################################
-# STEP-5 Validation
+# STEP 5 - Validation
 #############################################################
 
-cursor.execute(f'''
-select count(*)
-from "{TARGET_SCHEMA}"."{TABLE}"
-''')
+silver_count_df = spark.read.jdbc(
+    url=SILVER_JDBC,
+    table=f'(SELECT COUNT(*) AS cnt FROM "{TARGET_SCHEMA}"."{TABLE}") x',
+    properties=jdbc_props
+)
 
-print("Silver Count :", cursor.fetchone()[0])
+silver_count = silver_count_df.collect()[0]["cnt"]
 
-cursor.close()
+print("Silver Count:", silver_count)
 
-silver_conn.close()
-
-print("Completed Successfully")
+print("Completed Successfully.")
 
 job.commit()
