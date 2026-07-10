@@ -1,3 +1,4 @@
+import sys
 import psycopg2
 
 from pyspark.context import SparkContext
@@ -5,16 +6,15 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 
-import sys
 
-args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 
 job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
+job.init(args["JOB_NAME"], args)
 
 #############################################################
 # CONFIGURATION
@@ -25,22 +25,36 @@ BRONZE_HOST = "<PUT_BRONZE_HOST_HERE>"
 BRONZE_PORT = "5432"
 BRONZE_DB = "gsapdi"
 
+BRONZE_USERNAME = "bronze_username"
+BRONZE_PASSWORD = "<BRONZE_PASSWORD>"
+
 # Silver PostgreSQL
-SILVER_HOST = "gsapdi-pg-mt-dm-dev.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com"
+SILVER_HOST = (
+    "gsapdi-pg-mt-dm-dev."
+    "c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com"
+)
 SILVER_PORT = "5432"
 SILVER_DB = "mtdm"
 
-USERNAME = "jayathirth.kumsiravinder"
-PASSWORD = "<PASSWORD>"
+SILVER_USERNAME = "jayathirth.kumsiravinder"
+SILVER_PASSWORD = "<SILVER_PASSWORD>"
 
-BRONZE_JDBC = f"jdbc:postgresql://{BRONZE_HOST}:{BRONZE_PORT}/{BRONZE_DB}"
-SILVER_JDBC = f"jdbc:postgresql://{SILVER_HOST}:{SILVER_PORT}/{SILVER_DB}"
+BRONZE_JDBC = (
+    f"jdbc:postgresql://"
+    f"{BRONZE_HOST}:{BRONZE_PORT}/{BRONZE_DB}"
+)
+
+SILVER_JDBC = (
+    f"jdbc:postgresql://"
+    f"{SILVER_HOST}:{SILVER_PORT}/{SILVER_DB}"
+)
 
 SOURCE_SCHEMA = "CLM"
 TARGET_SCHEMA = "CLM"
 STAGE_SCHEMA = "etl_stage"
 
 TABLE = "clm_tcv"
+STAGE_TABLE = f"{TABLE}_stage"
 
 PRIMARY_KEYS = [
     "award_no",
@@ -49,128 +63,221 @@ PRIMARY_KEYS = [
 ]
 
 #############################################################
-# JDBC Properties
+# JDBC PROPERTIES
 #############################################################
 
-jdbc_props = {
-    "user": USERNAME,
-    "password": PASSWORD,
+bronze_jdbc_props = {
+    "user": BRONZE_USERNAME,
+    "password": BRONZE_PASSWORD,
     "driver": "org.postgresql.Driver"
 }
 
-#############################################################
-# STEP-1 Read Bronze
-#############################################################
+silver_jdbc_props = {
+    "user": SILVER_USERNAME,
+    "password": SILVER_PASSWORD,
+    "driver": "org.postgresql.Driver"
+}
 
-print("Reading Bronze table...")
+silver_conn = None
+cursor = None
 
-bronze_df = spark.read.jdbc(
-    url=BRONZE_JDBC,
-    table=f'"{SOURCE_SCHEMA}"."{TABLE}"',
-    properties=jdbc_props
-)
+try:
 
-print("Bronze Count :", bronze_df.count())
+    #########################################################
+    # STEP 1: READ BRONZE
+    #########################################################
 
-#############################################################
-# STEP-2 Truncate Stage
-#############################################################
+    print("Reading Bronze table...")
 
-silver_conn = psycopg2.connect(
-    host=SILVER_HOST,
-    port=SILVER_PORT,
-    database=SILVER_DB,
-    user=USERNAME,
-    password=PASSWORD
-)
+    bronze_df = spark.read.jdbc(
+        url=BRONZE_JDBC,
+        table=f'"{SOURCE_SCHEMA}"."{TABLE}"',
+        properties=bronze_jdbc_props
+    )
 
-silver_conn.autocommit = False
+    bronze_count = bronze_df.count()
 
-cursor = silver_conn.cursor()
+    print(f"Bronze Count: {bronze_count}")
 
-cursor.execute(f"""
-TRUNCATE TABLE "{STAGE_SCHEMA}"."{TABLE}_stage";
-""")
+    if bronze_count == 0:
+        print("Bronze table is empty. Nothing to load.")
+        job.commit()
+        sys.exit(0)
 
-silver_conn.commit()
+    #########################################################
+    # STEP 2: CONNECT TO SILVER
+    #########################################################
 
-print("Stage truncated.")
+    silver_conn = psycopg2.connect(
+        host=SILVER_HOST,
+        port=SILVER_PORT,
+        database=SILVER_DB,
+        user=SILVER_USERNAME,
+        password=SILVER_PASSWORD
+    )
 
-#############################################################
-# STEP-3 Load Stage
-#############################################################
+    silver_conn.autocommit = False
+    cursor = silver_conn.cursor()
 
-bronze_df.write.jdbc(
-    url=SILVER_JDBC,
-    table=f'"{STAGE_SCHEMA}"."{TABLE}_stage"',
-    mode="append",
-    properties=jdbc_props
-)
+    #########################################################
+    # STEP 3: TRUNCATE STAGE
+    #########################################################
 
-print("Loaded into Stage.")
+    truncate_sql = f'''
+        TRUNCATE TABLE
+        "{STAGE_SCHEMA}"."{STAGE_TABLE}";
+    '''
 
-#############################################################
-# STEP-4 Merge
-#############################################################
+    cursor.execute(truncate_sql)
+    silver_conn.commit()
 
-columns = bronze_df.columns
+    print("Stage table truncated.")
 
-insert_cols = ",".join([f'"{c}"' for c in columns])
+    #########################################################
+    # STEP 4: LOAD BRONZE INTO SILVER STAGE
+    #########################################################
 
-select_cols = ",".join([f'"{c}"' for c in columns])
+    bronze_df.write.jdbc(
+        url=SILVER_JDBC,
+        table=f'"{STAGE_SCHEMA}"."{STAGE_TABLE}"',
+        mode="append",
+        properties=silver_jdbc_props
+    )
 
-conflict_cols = ",".join([f'"{c}"' for c in PRIMARY_KEYS])
+    print("Bronze data loaded into Silver stage table.")
 
-update_cols = []
+    #########################################################
+    # STEP 5: VALIDATE STAGE COUNT
+    #########################################################
 
-for c in columns:
+    cursor.execute(
+        f'''
+        SELECT COUNT(*)
+        FROM "{STAGE_SCHEMA}"."{STAGE_TABLE}";
+        '''
+    )
 
-    if c not in PRIMARY_KEYS:
+    stage_count = cursor.fetchone()[0]
 
-        update_cols.append(
-            f'''"{c}" = EXCLUDED."{c}"'''
+    print(f"Stage Count: {stage_count}")
+
+    if stage_count != bronze_count:
+        raise RuntimeError(
+            f"Count mismatch. "
+            f"Bronze={bronze_count}, Stage={stage_count}"
         )
 
-update_sql = ",\n".join(update_cols)
+    #########################################################
+    # STEP 6: BUILD MERGE SQL
+    #########################################################
 
-merge_sql = f"""
-INSERT INTO "{TARGET_SCHEMA}"."{TABLE}"
-({insert_cols})
+    columns = bronze_df.columns
 
-SELECT
-{select_cols}
+    missing_keys = [
+        key
+        for key in PRIMARY_KEYS
+        if key not in columns
+    ]
 
-FROM "{STAGE_SCHEMA}"."{TABLE}_stage"
+    if missing_keys:
+        raise RuntimeError(
+            f"Primary key columns missing from Bronze: "
+            f"{missing_keys}"
+        )
 
-ON CONFLICT ({conflict_cols})
+    insert_cols = ", ".join(
+        [f'"{column}"' for column in columns]
+    )
 
-DO UPDATE
-SET
+    select_cols = ", ".join(
+        [f'"{column}"' for column in columns]
+    )
 
-{update_sql};
-"""
+    conflict_cols = ", ".join(
+        [f'"{column}"' for column in PRIMARY_KEYS]
+    )
 
-print("Running Merge...")
+    update_columns = [
+        column
+        for column in columns
+        if column not in PRIMARY_KEYS
+    ]
 
-cursor.execute(merge_sql)
+    if not update_columns:
+        conflict_action = "DO NOTHING"
+    else:
+        update_sql = ",\n".join(
+            [
+                f'"{column}" = EXCLUDED."{column}"'
+                for column in update_columns
+            ]
+        )
 
-silver_conn.commit()
+        conflict_action = f"""
+        DO UPDATE SET
+        {update_sql}
+        """
 
-#############################################################
-# STEP-5 Validation
-#############################################################
+    merge_sql = f"""
+        INSERT INTO "{TARGET_SCHEMA}"."{TABLE}"
+        ({insert_cols})
 
-cursor.execute(f'''
-select count(*)
-from "{TARGET_SCHEMA}"."{TABLE}"
-''')
+        SELECT
+        {select_cols}
+        FROM "{STAGE_SCHEMA}"."{STAGE_TABLE}"
 
-print("Silver Count :", cursor.fetchone()[0])
+        ON CONFLICT ({conflict_cols})
+        {conflict_action};
+    """
 
-cursor.close()
+    #########################################################
+    # STEP 7: MERGE INTO SILVER
+    #########################################################
 
-silver_conn.close()
+    print("Running merge...")
 
-print("Completed Successfully")
+    cursor.execute(merge_sql)
 
-job.commit()
+    merged_row_count = cursor.rowcount
+
+    silver_conn.commit()
+
+    print(
+        "Merge completed. "
+        f"PostgreSQL affected rows: {merged_row_count}"
+    )
+
+    #########################################################
+    # STEP 8: VALIDATION
+    #########################################################
+
+    cursor.execute(
+        f'''
+        SELECT COUNT(*)
+        FROM "{TARGET_SCHEMA}"."{TABLE}";
+        '''
+    )
+
+    silver_count = cursor.fetchone()[0]
+
+    print(f"Final Silver Count: {silver_count}")
+    print("Completed successfully.")
+
+    job.commit()
+
+except Exception as error:
+
+    print(f"Job failed: {str(error)}")
+
+    if silver_conn is not None:
+        silver_conn.rollback()
+
+    raise
+
+finally:
+
+    if cursor is not None:
+        cursor.close()
+
+    if silver_conn is not None:
+        silver_conn.close()
