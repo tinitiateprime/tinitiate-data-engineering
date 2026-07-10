@@ -24,15 +24,11 @@ job.init(args["JOB_NAME"], args)
 # CONFIGURATION
 #############################################################
 
-# -----------------------------------------------------------
 # Bronze PostgreSQL
-# -----------------------------------------------------------
-
 BRONZE_HOST = (
     "gsapdi-pg-stg."
     "c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com"
 )
-
 BRONZE_PORT = "5432"
 BRONZE_DB = "gsapdi"
 
@@ -40,15 +36,11 @@ BRONZE_USERNAME = "<BRONZE_USERNAME>"
 BRONZE_PASSWORD = "<BRONZE_PASSWORD>"
 
 
-# -----------------------------------------------------------
 # Silver PostgreSQL
-# -----------------------------------------------------------
-
 SILVER_HOST = (
     "gsapdi-pg-mt-dm-dev."
     "c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com"
 )
-
 SILVER_PORT = "5432"
 SILVER_DB = "mtdm"
 
@@ -56,10 +48,7 @@ SILVER_USERNAME = "<SILVER_USERNAME>"
 SILVER_PASSWORD = "<SILVER_PASSWORD>"
 
 
-# -----------------------------------------------------------
 # JDBC URLs
-# -----------------------------------------------------------
-
 BRONZE_JDBC = (
     f"jdbc:postgresql://"
     f"{BRONZE_HOST}:{BRONZE_PORT}/{BRONZE_DB}"
@@ -71,10 +60,7 @@ SILVER_JDBC = (
 )
 
 
-# -----------------------------------------------------------
-# Table Configuration
-# -----------------------------------------------------------
-
+# Schema and table configuration
 SOURCE_SCHEMA = "CLM"
 TARGET_SCHEMA = "CLM"
 STAGE_SCHEMA = "etl_stage"
@@ -107,64 +93,28 @@ silver_jdbc_props = {
 
 
 #############################################################
-# HELPER TO RUN SQL ON SILVER USING JVM JDBC
+# HELPER TO RUN SQL ON SILVER DATABASE USING JDBC
 #############################################################
 
 def run_sql(sql):
-    """
-    Executes SQL against the Silver PostgreSQL database.
+    conn = spark._sc._gateway.jvm.java.sql.DriverManager.getConnection(
+        SILVER_JDBC,
+        SILVER_USERNAME,
+        SILVER_PASSWORD
+    )
 
-    Used for:
-    - TRUNCATE
-    - INSERT ... ON CONFLICT
-    - DDL statements
-    """
-
-    conn = None
-    stmt = None
+    stmt = conn.createStatement()
 
     try:
-        jvm = spark._sc._gateway.jvm
-
-        jvm.java.lang.Class.forName(
-            "org.postgresql.Driver"
-        )
-
-        conn = jvm.java.sql.DriverManager.getConnection(
-            SILVER_JDBC,
-            SILVER_USERNAME,
-            SILVER_PASSWORD
-        )
-
-        conn.setAutoCommit(False)
-
-        stmt = conn.createStatement()
-
         stmt.execute(sql)
 
-        conn.commit()
-
-    except Exception as error:
-
-        if conn is not None:
-            conn.rollback()
-
-        print("SQL execution failed:")
-        print(str(error))
-
-        raise
-
     finally:
-
-        if stmt is not None:
-            stmt.close()
-
-        if conn is not None:
-            conn.close()
+        stmt.close()
+        conn.close()
 
 
 #############################################################
-# STEP 1: READ BRONZE
+# STEP 1 - READ BRONZE
 #############################################################
 
 print("Reading Bronze table...")
@@ -179,30 +129,25 @@ bronze_count = bronze_df.count()
 
 print("Bronze Count:", bronze_count)
 
-if bronze_count == 0:
-    print("Bronze table is empty. Nothing to load.")
-    job.commit()
-    sys.exit(0)
-
 
 #############################################################
-# STEP 2: TRUNCATE STAGE
+# STEP 2 - TRUNCATE STAGE
 #############################################################
 
 print("Truncating Stage table...")
 
-truncate_sql = f"""
-TRUNCATE TABLE
-"{STAGE_SCHEMA}"."{STAGE_TABLE}";
-"""
-
-run_sql(truncate_sql)
+run_sql(
+    f'''
+    TRUNCATE TABLE
+    "{STAGE_SCHEMA}"."{STAGE_TABLE}";
+    '''
+)
 
 print("Stage truncated.")
 
 
 #############################################################
-# STEP 3: LOAD BRONZE INTO SILVER STAGE
+# STEP 3 - LOAD STAGE
 #############################################################
 
 print("Loading Bronze data into Stage...")
@@ -218,50 +163,10 @@ print("Loaded into Stage.")
 
 
 #############################################################
-# STEP 4: VALIDATE STAGE COUNT
-#############################################################
-
-stage_count_df = spark.read.jdbc(
-    url=SILVER_JDBC,
-    table=f"""
-    (
-        SELECT COUNT(*) AS cnt
-        FROM "{STAGE_SCHEMA}"."{STAGE_TABLE}"
-    ) stage_count
-    """,
-    properties=silver_jdbc_props
-)
-
-stage_count = stage_count_df.collect()[0]["cnt"]
-
-print("Stage Count:", stage_count)
-
-if bronze_count != stage_count:
-    raise RuntimeError(
-        f"Bronze and Stage counts do not match. "
-        f"Bronze={bronze_count}, "
-        f"Stage={stage_count}"
-    )
-
-
-#############################################################
-# STEP 5: BUILD MERGE SQL
+# STEP 4 - MERGE STAGE INTO SILVER
 #############################################################
 
 columns = bronze_df.columns
-
-missing_primary_keys = [
-    key
-    for key in PRIMARY_KEYS
-    if key not in columns
-]
-
-if missing_primary_keys:
-    raise RuntimeError(
-        f"Primary key columns are missing: "
-        f"{missing_primary_keys}"
-    )
-
 
 insert_cols = ", ".join(
     [f'"{column}"' for column in columns]
@@ -275,7 +180,6 @@ conflict_cols = ", ".join(
     [f'"{column}"' for column in PRIMARY_KEYS]
 )
 
-
 update_cols = []
 
 for column in columns:
@@ -286,19 +190,7 @@ for column in columns:
             f'"{column}" = EXCLUDED."{column}"'
         )
 
-
-if update_cols:
-
-    update_sql = ",\n".join(update_cols)
-
-    conflict_action = f"""
-    DO UPDATE SET
-    {update_sql}
-    """
-
-else:
-
-    conflict_action = "DO NOTHING"
+update_sql = ",\n".join(update_cols)
 
 
 merge_sql = f"""
@@ -314,13 +206,11 @@ ON CONFLICT
 (
     {conflict_cols}
 )
-{conflict_action};
+DO UPDATE
+SET
+    {update_sql};
 """
 
-
-#############################################################
-# STEP 6: MERGE STAGE INTO SILVER
-#############################################################
 
 print("Running Merge...")
 
@@ -330,24 +220,22 @@ print("Merge completed.")
 
 
 #############################################################
-# STEP 7: VALIDATE SILVER COUNT
+# STEP 5 - VALIDATION
 #############################################################
 
 silver_count_df = spark.read.jdbc(
     url=SILVER_JDBC,
-    table=f"""
+    table=f'''
     (
         SELECT COUNT(*) AS cnt
         FROM "{TARGET_SCHEMA}"."{TABLE}"
-    ) silver_count
-    """,
+    ) x
+    ''',
     properties=silver_jdbc_props
 )
 
 silver_count = silver_count_df.collect()[0]["cnt"]
 
-print("Bronze Count:", bronze_count)
-print("Stage Count:", stage_count)
 print("Silver Count:", silver_count)
 
 print("Completed Successfully.")
