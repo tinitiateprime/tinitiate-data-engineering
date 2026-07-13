@@ -785,9 +785,27 @@ def synchronize_target_schema(
 
     # Block before changing anything if a risky difference exists.
     if risky_changes:
+        problem_details = "; ".join(
+            (
+                f'{change["column_name"]}: '
+                f'Bronze={change["source_type"]}, '
+                f'Silver={change["target_type"]}'
+            )
+            for change in risky_changes
+        )
+
+        control_message = (
+            f"{len(risky_changes)} datatype change(s) require developer review. "
+            f"Affected columns: {problem_details}. "
+            "The complete table load was blocked."
+        )
+
         for change in risky_changes:
-            reason = (
+            column_reason = (
                 "Risky or narrowing datatype change requires developer review. "
+                f'Column={change["column_name"]}, '
+                f'Bronze datatype={change["source_type"]}, '
+                f'Silver datatype={change["target_type"]}. '
                 "The complete table load was blocked."
             )
 
@@ -799,7 +817,7 @@ def synchronize_target_schema(
                 change["source_type"],
                 change["target_type"],
                 "MANUAL_REVIEW_REQUIRED",
-                reason,
+                column_reason,
             )
 
             log_error(
@@ -807,7 +825,7 @@ def synchronize_target_schema(
                 source_table,
                 target_table,
                 "SCHEMA_VALIDATION",
-                reason,
+                column_reason,
                 severity="CRITICAL",
                 column_name=change["column_name"],
                 source_datatype=change["source_type"],
@@ -817,10 +835,7 @@ def synchronize_target_schema(
         return {
             "blocked": True,
             "review_count": len(risky_changes),
-            "reason": (
-                f"{len(risky_changes)} datatype change(s) require "
-                "developer review."
-            ),
+            "reason": control_message,
         }
 
     # Add new columns only after confirming there are no risky changes.
