@@ -1,1713 +1,326 @@
-###############################################################################
-#
-# CLM BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
-#
-# Technology:
-#   AWS Glue Python Shell / Spark Job runtime
-#   Python
-#   psycopg2
-#   PostgreSQL
-#
-# Purpose:
-#   This framework loads every enabled CLM table from the Bronze PostgreSQL
-#   database into the Silver PostgreSQL database using one reusable script.
-#
-# Main capabilities:
-#   1. Discover all CLM source tables automatically.
-#   2. Optionally use a metadata configuration table to control processing.
-#   3. Detect new Bronze columns and add them to Silver.
-#   4. Preserve Silver columns that no longer exist in Bronze.
-#   5. Apply only approved safe datatype widening changes automatically.
-#   6. Block the complete table when a risky datatype change is detected.
-#   7. Check for dependent views and materialized views before changing types.
-#   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
-#   9. Use PostgreSQL COPY for efficient bulk data transfer.
-#  10. Use INSERT ... ON CONFLICT ... DO UPDATE for upsert processing.
-#  11. Store daily source/target counts in the load-control table.
-#  12. Store processing failures in the error table.
-#  13. Store datatype issues in the schema-review table.
-#  14. Continue with the next table when one table fails or is blocked.
-#
-# Important design rules:
-#   - Never drop a Silver column automatically.
-#   - Never partially load a table when a datatype issue is found.
-#   - Never automatically apply risky or narrowing datatype changes.
-#   - Never alter a datatype while dependent database objects exist.
-#   - Always record a final control-table entry for every attempted table.
-#
-###############################################################################
+"""
+dms_task_failures.py
 
+Reads AWS DMS apply failures from PostgreSQL:
+    public.awsdms_apply_exceptions
+
+Outputs:
+    dms_task_failures_last_30_days.csv
+"""
+
+import csv
 import os
-import uuid
-import tempfile
-import traceback
-from datetime import datetime, timezone
+import re
+import sys
+from collections import Counter
+from datetime import datetime
+from typing import Optional
 
 import psycopg2
-from psycopg2 import sql
+from psycopg2.extras import RealDictCursor
 
 
-###############################################################################
-# STEP 0 - FRAMEWORK CONFIGURATION
-#
-# This section defines:
-#   - Bronze and Silver PostgreSQL connection properties
-#   - Source, target and control schemas
-#   - Job name and run identifier
-#   - Optional include/exclude table lists
-#
-# Credentials should ideally come from AWS Secrets Manager. Environment
-# variables are used here so that passwords do not need to be hardcoded.
-###############################################################################
+# ---------------------------------------------------------
+# DATABASE CONFIGURATION
+# ---------------------------------------------------------
+# Prefer environment variables instead of hardcoding passwords.
 
-# Bronze PostgreSQL
-BRONZE_HOST = os.getenv(
-    "BRONZE_HOST",
-    "gsapdi-pg-stg.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
-)
-BRONZE_PORT = int(os.getenv("BRONZE_PORT", "5432"))
-BRONZE_DB = os.getenv("BRONZE_DB", "gsapdi")
-BRONZE_USER = os.getenv("BRONZE_USERNAME", "<BRONZE_USERNAME>")
-BRONZE_PASSWORD = os.getenv("BRONZE_PASSWORD", "<BRONZE_PASSWORD>")
-
-# Silver PostgreSQL
-SILVER_HOST = os.getenv(
-    "SILVER_HOST",
+DB_HOST = os.getenv(
+    "DB_HOST",
     "gsapdi-pg-mt-dm-dev.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
 )
-SILVER_PORT = int(os.getenv("SILVER_PORT", "5432"))
-SILVER_DB = os.getenv("SILVER_DB", "mtdm")
-SILVER_USER = os.getenv("SILVER_USERNAME", "<SILVER_USERNAME>")
-SILVER_PASSWORD = os.getenv("SILVER_PASSWORD", "<SILVER_PASSWORD>")
+DB_PORT = int(os.getenv("DB_PORT", "5432"))
+DB_NAME = os.getenv("DB_NAME", "mtdm")
+DB_USER = os.getenv("DB_USER", "")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-# Framework settings
-SOURCE_SCHEMA = os.getenv("SOURCE_SCHEMA", "CLM")
-TARGET_SCHEMA = os.getenv("TARGET_SCHEMA", "CLM")
-CONTROL_SCHEMA = os.getenv("CONTROL_SCHEMA", "etl_control")
-JOB_NAME = os.getenv("JOB_NAME", "clm_bronze_to_silver_framework")
-RUN_ID = uuid.uuid4().hex
-
-# Optional comma-separated controls.
-# Empty INCLUDE_TABLES means discover all base tables under SOURCE_SCHEMA.
-INCLUDE_TABLES = {
-    item.strip()
-    for item in os.getenv("INCLUDE_TABLES", "").split(",")
-    if item.strip()
-}
-EXCLUDE_TABLES = {
-    item.strip()
-    for item in os.getenv("EXCLUDE_TABLES", "").split(",")
-    if item.strip()
-}
+DAYS_BACK = int(os.getenv("DAYS_BACK", "30"))
+OUTPUT_FILE = os.getenv(
+    "OUTPUT_FILE",
+    "dms_task_failures_last_30_days.csv",
+)
 
 
-###############################################################################
-# STEP 1 - DATABASE CONNECTION HELPERS
-#
-# Two independent psycopg2 connections are created:
-#   - Bronze connection: reads source metadata and data
-#   - Silver connection: manages target schema, TEMP tables, merge and auditing
-#
-# Connections are opened once for the framework run and reused for all tables.
-###############################################################################
+# ---------------------------------------------------------
+# CLASSIFICATION PATTERNS
+# ---------------------------------------------------------
 
-def connect_bronze():
+COLUMN_TYPE_DRIFT_PATTERNS = [
+    r"\bcolumn\b.*\bdoes not exist\b",
+    r"\bmissing column\b",
+    r"\bunknown column\b",
+    r"\btype mismatch\b",
+    r"\bdata type mismatch\b",
+    r"\bdatatype mismatch\b",
+    r"\bis of type\b.*\bbut expression is of type\b",
+    r"\binvalid input syntax for\b",
+    r"\bvalue too long for type\b",
+    r"\bnumeric field overflow\b",
+    r"\binvalid byte sequence\b",
+    r"\bextra data after last expected column\b",
+    r"\btable definition.*changed\b",
+    r"\bschema.*changed\b",
+    r"\bsource table.*changed\b",
+    r"\bcannot cast\b",
+    r"\boperator does not exist\b",
+]
+
+MATVIEW_LOCK_PATTERNS = [
+    r"\bcould not obtain lock\b",
+    r"\block timeout\b",
+    r"\bcanceling statement due to lock timeout\b",
+    r"\bdeadlock detected\b",
+    r"\brelation.*is being used\b",
+    r"\bmaterialized view\b.*\block\b",
+    r"\block\b.*\bmaterialized view\b",
+    r"\brefresh materialized view\b.*\bfailed\b",
+    r"\bcannot refresh materialized view\b",
+]
+
+PERMISSION_PATTERNS = [
+    r"\bpermission denied\b",
+    r"\binsufficient privilege\b",
+    r"\bmust be owner\b",
+    r"\bnot owner of\b",
+    r"\baccess denied\b",
+    r"\bnot authorized\b",
+    r"\bpermission denied for schema\b",
+    r"\bpermission denied for table\b",
+    r"\bpermission denied for relation\b",
+    r"\bpermission denied for sequence\b",
+]
+
+MISSING_OBJECT_PATTERNS = [
+    r"\brelation\b.*\bdoes not exist\b",
+    r"\btable\b.*\bdoes not exist\b",
+    r"\bschema\b.*\bdoes not exist\b",
+]
+
+
+def matches_any(text: str, patterns: list[str]) -> bool:
+    """Return True when any regular-expression pattern matches."""
+    return any(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        for pattern in patterns
+    )
+
+
+def classify_failure(error: Optional[str], statement: Optional[str]) -> str:
+    """
+    Categorize a DMS failure using the ERROR and STATEMENT values.
+
+    Missing relations are kept separate because they are not always
+    column/type drift. They may indicate a missing target object.
+    """
+    combined_text = f"{error or ''} {statement or ''}".strip()
+
+    if matches_any(combined_text, PERMISSION_PATTERNS):
+        return "Permission/ownership issue"
+
+    if matches_any(combined_text, MATVIEW_LOCK_PATTERNS):
+        return "Dependent object lock during matview refresh"
+
+    if matches_any(combined_text, COLUMN_TYPE_DRIFT_PATTERNS):
+        return "Column/type drift on source"
+
+    if matches_any(combined_text, MISSING_OBJECT_PATTERNS):
+        return "Missing table/relation - review for schema drift"
+
+    return "Unclassified"
+
+
+def clean_text(value: Optional[str]) -> str:
+    """Make multiline database text safe for CSV."""
+    if value is None:
+        return ""
+
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def validate_configuration() -> None:
+    """Make sure required credentials were supplied."""
+    missing = []
+
+    if not DB_USER:
+        missing.append("DB_USER")
+
+    if not DB_PASSWORD:
+        missing.append("DB_PASSWORD")
+
+    if missing:
+        raise ValueError(
+            "Missing environment variables: "
+            + ", ".join(missing)
+        )
+
+
+def get_connection():
+    """Create a secure PostgreSQL connection."""
     return psycopg2.connect(
-        host=BRONZE_HOST,
-        port=BRONZE_PORT,
-        dbname=BRONZE_DB,
-        user=BRONZE_USER,
-        password=BRONZE_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        sslmode="require",
         connect_timeout=30,
-        application_name=JOB_NAME,
+        application_name="dms_failure_inventory",
     )
 
 
-def connect_silver():
-    return psycopg2.connect(
-        host=SILVER_HOST,
-        port=SILVER_PORT,
-        dbname=SILVER_DB,
-        user=SILVER_USER,
-        password=SILVER_PASSWORD,
-        connect_timeout=30,
-        application_name=JOB_NAME,
-    )
+def pull_failures() -> list[dict]:
+    """
+    Read failures from the last configured number of days.
 
+    The column names must be quoted because AWS DMS created them
+    using uppercase identifiers.
+    """
+    sql = """
+        SELECT
+            "TASK_NAME",
+            "TABLE_OWNER",
+            "TABLE_NAME",
+            "ERROR_TIME",
+            "ERROR",
+            "STATEMENT"
+        FROM public.awsdms_apply_exceptions
+        WHERE "ERROR_TIME" >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+        ORDER BY "ERROR_TIME" DESC;
+    """
 
-###############################################################################
-# STEP 2 - CREATE FRAMEWORK CONTROL TABLES
-#
-# The following tables are created in the Silver control schema:
-#
-# etl_table_config
-#   Optional metadata table used to enable/disable tables, set execution order,
-#   rename targets, and provide primary-key overrides.
-#
-# etl_load_control
-#   Stores one audit row per table per framework execution, including Bronze
-#   count, Silver count, rows processed, status, timing and message.
-#
-# etl_error_log
-#   Stores technical failures such as connection, COPY, merge or cleanup errors.
-#
-# etl_schema_change_review
-#   Stores risky datatype differences and dependency-related schema changes that
-#   require developer review before the table can be loaded.
-###############################################################################
+    results = []
 
-def create_framework_tables(silver_conn):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}")
-            .format(sql.Identifier(CONTROL_SCHEMA))
-        )
+    with get_connection() as connection:
+        # Named cursor reads large tables in batches instead of loading
+        # the complete result into memory at once.
+        with connection.cursor(
+            name="dms_failure_cursor",
+            cursor_factory=RealDictCursor,
+        ) as cursor:
+            cursor.itersize = 1_000
+            cursor.execute(sql, (DAYS_BACK,))
 
-        # Optional metadata-driven configuration.
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.etl_table_config
-                (
-                    config_id              bigserial PRIMARY KEY,
-                    source_schema          varchar(255) NOT NULL,
-                    source_table           varchar(255) NOT NULL,
-                    target_schema          varchar(255) NOT NULL,
-                    target_table           varchar(255) NOT NULL,
-                    enabled                boolean NOT NULL DEFAULT true,
-                    primary_key_override   text,
-                    load_order             integer NOT NULL DEFAULT 100,
-                    created_datetime       timestamptz NOT NULL
-                                           DEFAULT CURRENT_TIMESTAMP,
-                    updated_datetime       timestamptz NOT NULL
-                                           DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (source_schema, source_table)
-                )
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA))
-        )
+            while True:
+                rows = cursor.fetchmany(1_000)
 
-        # One record per table per framework run.
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.etl_load_control
-                (
-                    control_id              bigserial PRIMARY KEY,
-                    run_id                  varchar(64) NOT NULL,
-                    job_name                varchar(255) NOT NULL,
-                    source_schema           varchar(255) NOT NULL,
-                    source_table            varchar(255) NOT NULL,
-                    target_schema           varchar(255) NOT NULL,
-                    target_table            varchar(255) NOT NULL,
-                    bronze_count            bigint,
-                    silver_count            bigint,
-                    rows_processed          bigint,
-                    status                  varchar(40) NOT NULL,
-                    schema_review_required  boolean NOT NULL DEFAULT false,
-                    start_datetime          timestamptz NOT NULL,
-                    end_datetime            timestamptz NOT NULL,
-                    error_count             integer NOT NULL DEFAULT 0,
-                    message                 text
-                )
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA))
-        )
+                if not rows:
+                    break
 
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE INDEX IF NOT EXISTS idx_etl_load_control_daily
-                ON {}.etl_load_control
-                (source_table, start_datetime)
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA))
-        )
+                for row in rows:
+                    error_text = clean_text(row["ERROR"])
+                    statement_text = clean_text(row["STATEMENT"])
 
-        # Processing failures.
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.etl_error_log
-                (
-                    error_id          bigserial PRIMARY KEY,
-                    run_id            varchar(64) NOT NULL,
-                    job_name          varchar(255) NOT NULL,
-                    source_schema     varchar(255),
-                    source_table      varchar(255),
-                    target_schema     varchar(255),
-                    target_table      varchar(255),
-                    error_step        varchar(100) NOT NULL,
-                    severity          varchar(20) NOT NULL DEFAULT 'ERROR',
-                    column_name       varchar(255),
-                    source_datatype   text,
-                    target_datatype   text,
-                    error_message     text,
-                    error_detail      text,
-                    error_datetime    timestamptz NOT NULL
-                                      DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA))
-        )
-
-        # Developer review queue for risky schema changes.
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.etl_schema_change_review
-                (
-                    review_id            bigserial PRIMARY KEY,
-                    run_id               varchar(64) NOT NULL,
-                    source_schema        varchar(255) NOT NULL,
-                    source_table         varchar(255) NOT NULL,
-                    target_schema        varchar(255) NOT NULL,
-                    target_table         varchar(255) NOT NULL,
-                    column_name          varchar(255) NOT NULL,
-                    source_datatype      text NOT NULL,
-                    target_datatype      text,
-                    change_type          varchar(50) NOT NULL,
-                    reason               text,
-                    review_status        varchar(30) NOT NULL DEFAULT 'PENDING',
-                    reviewed_by          varchar(255),
-                    review_notes         text,
-                    detected_datetime    timestamptz NOT NULL
-                                         DEFAULT CURRENT_TIMESTAMP,
-                    reviewed_datetime    timestamptz,
-                    implemented_datetime timestamptz
-                )
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA))
-        )
-
-    silver_conn.commit()
-
-
-###############################################################################
-# STEP 3 - AUDIT AND ERROR-LOGGING HELPERS
-#
-# These functions isolate the logging logic from the loading logic.
-#
-# log_error()
-#   Inserts technical error details into etl_error_log.
-#
-# log_schema_review()
-#   Inserts one review record for each affected column.
-#
-# write_control_record()
-#   Writes the final table-level execution result to etl_load_control.
-###############################################################################
-
-def log_error(
-    silver_conn,
-    source_table,
-    target_table,
-    error_step,
-    error_message,
-    severity="ERROR",
-    error_detail=None,
-    column_name=None,
-    source_datatype=None,
-    target_datatype=None,
-):
-    try:
-        with silver_conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    INSERT INTO {}.etl_error_log
-                    (
-                        run_id,
-                        job_name,
-                        source_schema,
-                        source_table,
-                        target_schema,
-                        target_table,
-                        error_step,
-                        severity,
-                        column_name,
-                        source_datatype,
-                        target_datatype,
-                        error_message,
-                        error_detail
+                    results.append(
+                        {
+                            "task_name": row["TASK_NAME"],
+                            "table_owner": row["TABLE_OWNER"],
+                            "table_name": row["TABLE_NAME"],
+                            "error_time": row["ERROR_TIME"],
+                            "category": classify_failure(
+                                error_text,
+                                statement_text,
+                            ),
+                            "error": error_text,
+                            "statement": statement_text,
+                        }
                     )
-                    VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s,
-                     %s, %s, %s, %s, %s)
-                    """
-                ).format(sql.Identifier(CONTROL_SCHEMA)),
-                (
-                    RUN_ID,
-                    JOB_NAME,
-                    SOURCE_SCHEMA,
-                    source_table,
-                    TARGET_SCHEMA,
-                    target_table,
-                    error_step,
-                    severity,
-                    column_name,
-                    source_datatype,
-                    target_datatype,
-                    error_message,
-                    error_detail,
-                ),
-            )
-        silver_conn.commit()
-    except Exception as audit_error:
-        silver_conn.rollback()
-        print(f"WARNING: Error-table insert failed: {audit_error}")
 
-
-def log_schema_review(
-    silver_conn,
-    source_table,
-    target_table,
-    column_name,
-    source_type,
-    target_type,
-    change_type,
-    reason,
-):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                """
-                INSERT INTO {}.etl_schema_change_review
-                (
-                    run_id,
-                    source_schema,
-                    source_table,
-                    target_schema,
-                    target_table,
-                    column_name,
-                    source_datatype,
-                    target_datatype,
-                    change_type,
-                    reason,
-                    review_status
-                )
-                VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA)),
-            (
-                RUN_ID,
-                SOURCE_SCHEMA,
-                source_table,
-                TARGET_SCHEMA,
-                target_table,
-                column_name,
-                source_type,
-                target_type,
-                change_type,
-                reason,
-            ),
-        )
-    silver_conn.commit()
-
-
-def write_control_record(
-    silver_conn,
-    source_table,
-    target_table,
-    bronze_count,
-    silver_count,
-    rows_processed,
-    status,
-    schema_review_required,
-    start_datetime,
-    end_datetime,
-    error_count,
-    message,
-):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                """
-                INSERT INTO {}.etl_load_control
-                (
-                    run_id,
-                    job_name,
-                    source_schema,
-                    source_table,
-                    target_schema,
-                    target_table,
-                    bronze_count,
-                    silver_count,
-                    rows_processed,
-                    status,
-                    schema_review_required,
-                    start_datetime,
-                    end_datetime,
-                    error_count,
-                    message
-                )
-                VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, %s, %s)
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA)),
-            (
-                RUN_ID,
-                JOB_NAME,
-                SOURCE_SCHEMA,
-                source_table,
-                TARGET_SCHEMA,
-                target_table,
-                bronze_count,
-                silver_count,
-                rows_processed,
-                status,
-                schema_review_required,
-                start_datetime,
-                end_datetime,
-                error_count,
-                message,
-            ),
-        )
-    silver_conn.commit()
-
-
-###############################################################################
-# STEP 4 - POSTGRESQL METADATA DISCOVERY
-#
-# Metadata is read directly from PostgreSQL system catalogs.
-#
-# The framework discovers:
-#   - All source base tables
-#   - Enabled metadata configuration
-#   - Ordered table columns and exact PostgreSQL datatypes
-#   - Declared primary-key columns
-#   - Current source and target row counts
-###############################################################################
-
-def discover_source_tables(bronze_conn):
-    with bronze_conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = %s
-              AND table_type = 'BASE TABLE'
-            ORDER BY table_name
-            """,
-            (SOURCE_SCHEMA,),
-        )
-        tables = [row[0] for row in cur.fetchall()]
-
-    if INCLUDE_TABLES:
-        tables = [table for table in tables if table in INCLUDE_TABLES]
-
-    if EXCLUDE_TABLES:
-        tables = [table for table in tables if table not in EXCLUDE_TABLES]
-
-    return tables
-
-
-def get_enabled_config(silver_conn):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                """
-                SELECT
-                    source_table,
-                    target_table,
-                    primary_key_override
-                FROM {}.etl_table_config
-                WHERE source_schema = %s
-                  AND target_schema = %s
-                  AND enabled = true
-                ORDER BY load_order, source_table
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA)),
-            (SOURCE_SCHEMA, TARGET_SCHEMA),
-        )
-
-        return {
-            row[0]: {
-                "target_table": row[1],
-                "primary_key_override": row[2],
-            }
-            for row in cur.fetchall()
-        }
-
-
-def table_exists(conn, schema_name, table_name):
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXISTS
-            (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = %s
-                  AND table_name = %s
-            )
-            """,
-            (schema_name, table_name),
-        )
-        return cur.fetchone()[0]
-
-
-def get_table_columns(conn, schema_name, table_name):
-    """
-    Uses pg_catalog.format_type so varchar lengths, numeric precision/scale,
-    arrays, timestamps and PostgreSQL-specific types are retained.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                a.attname,
-                pg_catalog.format_type(a.atttypid, a.atttypmod),
-                a.attnotnull,
-                a.attnum
-            FROM pg_catalog.pg_attribute a
-            JOIN pg_catalog.pg_class c
-              ON c.oid = a.attrelid
-            JOIN pg_catalog.pg_namespace n
-              ON n.oid = c.relnamespace
-            WHERE n.nspname = %s
-              AND c.relname = %s
-              AND c.relkind IN ('r', 'p')
-              AND a.attnum > 0
-              AND NOT a.attisdropped
-            ORDER BY a.attnum
-            """,
-            (schema_name, table_name),
-        )
-
-        return [
-            {
-                "name": row[0],
-                "type": row[1],
-                "not_null": row[2],
-                "position": row[3],
-            }
-            for row in cur.fetchall()
-        ]
-
-
-def get_primary_keys(conn, schema_name, table_name):
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT a.attname
-            FROM pg_index i
-            JOIN pg_class c
-              ON c.oid = i.indrelid
-            JOIN pg_namespace n
-              ON n.oid = c.relnamespace
-            JOIN unnest(i.indkey) WITH ORDINALITY AS keys(attnum, ord)
-              ON true
-            JOIN pg_attribute a
-              ON a.attrelid = c.oid
-             AND a.attnum = keys.attnum
-            WHERE i.indisprimary
-              AND n.nspname = %s
-              AND c.relname = %s
-            ORDER BY keys.ord
-            """,
-            (schema_name, table_name),
-        )
-        return [row[0] for row in cur.fetchall()]
-
-
-def get_row_count(conn, schema_name, table_name):
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                sql.Identifier(schema_name),
-                sql.Identifier(table_name),
-            )
-        )
-        return cur.fetchone()[0]
-
-
-###############################################################################
-# STEP 5 - DATATYPE CLASSIFICATION RULES
-#
-# Every Bronze/Silver datatype difference is classified as:
-#
-# SAME
-#   Datatypes are identical.
-#
-# COMPATIBLE
-#   Silver is already wide enough to accept the Bronze values.
-#
-# SAFE_WIDEN
-#   Silver can be safely widened automatically.
-#
-# MANUAL_REVIEW
-#   The change may truncate, reinterpret or reject existing data.
-#   The entire table is blocked and no data is loaded.
-###############################################################################
-
-def normalize_type(type_name):
-    normalized = " ".join(type_name.lower().strip().split())
-
-    aliases = {
-        "int2": "smallint",
-        "int4": "integer",
-        "int8": "bigint",
-        "float4": "real",
-        "float8": "double precision",
-        "bool": "boolean",
-        "varchar": "character varying",
-        "timestamp": "timestamp without time zone",
-    }
-
-    return aliases.get(normalized, normalized)
-
-
-def parse_character_length(type_name):
-    normalized = normalize_type(type_name)
-
-    prefixes = ("character varying(", "varchar(", "character(")
-
-    for prefix in prefixes:
-        if normalized.startswith(prefix) and normalized.endswith(")"):
-            return int(normalized[len(prefix):-1])
-
-    return None
-
-
-def parse_numeric(type_name):
-    normalized = normalize_type(type_name)
-
-    if normalized.startswith("numeric(") and normalized.endswith(")"):
-        values = normalized[len("numeric("):-1].split(",")
-
-        if len(values) == 2:
-            return int(values[0].strip()), int(values[1].strip())
-
-    return None
-
-
-def classify_datatype_change(source_type, target_type):
-    """
-    Result:
-      SAME          - exact match
-      COMPATIBLE    - Silver already accepts the Bronze datatype
-      SAFE_WIDEN    - approved automatic Silver widening
-      MANUAL_REVIEW - block the complete table
-    """
-    source = normalize_type(source_type)
-    target = normalize_type(target_type)
-
-    if source == target:
-        return "SAME"
-
-    widening_order = {
-        "smallint": 1,
-        "integer": 2,
-        "bigint": 3,
-    }
-
-    if source in widening_order and target in widening_order:
-        if widening_order[source] > widening_order[target]:
-            return "SAFE_WIDEN"
-        return "COMPATIBLE"
-
-    if source == "double precision" and target == "real":
-        return "SAFE_WIDEN"
-
-    if source == "real" and target == "double precision":
-        return "COMPATIBLE"
-
-    if source == "timestamp without time zone" and target == "date":
-        return "SAFE_WIDEN"
-
-    if source == "date" and target == "timestamp without time zone":
-        return "COMPATIBLE"
-
-    source_length = parse_character_length(source)
-    target_length = parse_character_length(target)
-
-    if source_length is not None and target_length is not None:
-        if source_length > target_length:
-            return "SAFE_WIDEN"
-        return "COMPATIBLE"
-
-    if source == "text" and (
-        target.startswith("character varying")
-        or target.startswith("varchar")
-        or target.startswith("character(")
-    ):
-        return "SAFE_WIDEN"
-
-    if target == "text" and (
-        source.startswith("character varying")
-        or source.startswith("varchar")
-        or source.startswith("character(")
-    ):
-        return "COMPATIBLE"
-
-    source_numeric = parse_numeric(source)
-    target_numeric = parse_numeric(target)
-
-    if source_numeric and target_numeric:
-        source_precision, source_scale = source_numeric
-        target_precision, target_scale = target_numeric
-
-        source_integer_digits = source_precision - source_scale
-        target_integer_digits = target_precision - target_scale
-
-        if (
-            source_precision >= target_precision
-            and source_scale >= target_scale
-            and source_integer_digits >= target_integer_digits
-        ):
-            return "SAFE_WIDEN"
-
-        if (
-            target_precision >= source_precision
-            and target_scale >= source_scale
-            and target_integer_digits >= source_integer_digits
-        ):
-            return "COMPATIBLE"
-
-    return "MANUAL_REVIEW"
-
-
-###############################################################################
-# STEP 6 - DEPENDENT OBJECT CHECKS
-#
-# PostgreSQL does not allow ALTER COLUMN TYPE when views or materialized views
-# depend on the affected column.
-#
-# Before applying a safe datatype change, the framework searches PostgreSQL
-# dependency catalogs and returns:
-#   - Dependent schema
-#   - Dependent object name
-#   - Object type
-#
-# If dependencies exist:
-#   - ALTER TABLE is not attempted
-#   - The entire table load is blocked
-#   - Dependency details are written to the control, error and review tables
-###############################################################################
-
-def get_column_dependencies(
-    silver_conn,
-    schema_name,
-    table_name,
-    column_name,
-):
-    """
-    Return views and materialized views that depend directly on a target
-    table column. PostgreSQL blocks ALTER COLUMN TYPE while these objects
-    depend on the column.
-    """
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT DISTINCT
-                dependent_ns.nspname AS dependent_schema,
-                dependent_class.relname AS dependent_object,
-                CASE dependent_class.relkind
-                    WHEN 'v' THEN 'VIEW'
-                    WHEN 'm' THEN 'MATERIALIZED VIEW'
-                    ELSE 'RULE'
-                END AS dependent_object_type
-            FROM pg_catalog.pg_depend dep
-            JOIN pg_catalog.pg_rewrite rewrite_rule
-              ON rewrite_rule.oid = dep.objid
-            JOIN pg_catalog.pg_class dependent_class
-              ON dependent_class.oid = rewrite_rule.ev_class
-            JOIN pg_catalog.pg_namespace dependent_ns
-              ON dependent_ns.oid = dependent_class.relnamespace
-            JOIN pg_catalog.pg_class source_class
-              ON source_class.oid = dep.refobjid
-            JOIN pg_catalog.pg_namespace source_ns
-              ON source_ns.oid = source_class.relnamespace
-            JOIN pg_catalog.pg_attribute source_attribute
-              ON source_attribute.attrelid = source_class.oid
-             AND source_attribute.attnum = dep.refobjsubid
-            WHERE source_ns.nspname = %s
-              AND source_class.relname = %s
-              AND source_attribute.attname = %s
-              AND dep.refobjsubid > 0
-              AND dependent_class.relkind IN ('v', 'm')
-            ORDER BY
-                dependent_object_type,
-                dependent_schema,
-                dependent_object
-            """,
-            (schema_name, table_name, column_name),
-        )
-
-        return [
-            {
-                "schema": row[0],
-                "object": row[1],
-                "type": row[2],
-            }
-            for row in cur.fetchall()
-        ]
-
-
-def format_dependencies(dependencies):
-    return ", ".join(
-        (
-            f'{dependency["schema"]}.{dependency["object"]} '
-            f'({dependency["type"]})'
-        )
-        for dependency in dependencies
-    )
-
-
-###############################################################################
-# STEP 7 - SILVER TARGET SCHEMA MANAGEMENT
-#
-# This section performs controlled schema evolution.
-#
-# New target table:
-#   Create it from Bronze metadata and add the primary key.
-#
-# New Bronze column:
-#   Add the column to Silver automatically.
-#
-# Bronze column removed:
-#   Leave the Silver column unchanged to preserve historical data.
-#
-# Safe datatype widening:
-#   Check dependencies, then alter Silver automatically.
-#
-# Risky datatype change:
-#   Block the complete table and send it to developer review.
-###############################################################################
-
-def create_target_table(
-    silver_conn,
-    target_table,
-    source_columns,
-    primary_keys,
-):
-    column_definitions = []
-
-    for column in source_columns:
-        definition = sql.SQL("{} {}").format(
-            sql.Identifier(column["name"]),
-            sql.SQL(column["type"]),
-        )
-
-        if column["name"] in primary_keys:
-            definition += sql.SQL(" NOT NULL")
-
-        column_definitions.append(definition)
-
-    if primary_keys:
-        column_definitions.append(
-            sql.SQL("PRIMARY KEY ({})").format(
-                sql.SQL(", ").join(
-                    sql.Identifier(column) for column in primary_keys
-                )
-            )
-        )
-
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}")
-            .format(sql.Identifier(TARGET_SCHEMA))
-        )
-
-        cur.execute(
-            sql.SQL("CREATE TABLE {}.{} ({})").format(
-                sql.Identifier(TARGET_SCHEMA),
-                sql.Identifier(target_table),
-                sql.SQL(", ").join(column_definitions),
-            )
-        )
-
-    silver_conn.commit()
-
-
-def synchronize_target_schema(
-    silver_conn,
-    source_table,
-    target_table,
-    source_columns,
-    primary_keys,
-):
-    """
-    Rules:
-      - New Bronze columns are added automatically.
-      - Columns removed from Bronze are never dropped from Silver.
-      - Safe widening changes are applied automatically.
-      - Any risky datatype difference blocks the complete table.
-      - Safe ALTER failures also block the complete table.
-    """
-    if not table_exists(silver_conn, TARGET_SCHEMA, target_table):
-        create_target_table(
-            silver_conn,
-            target_table,
-            source_columns,
-            primary_keys,
-        )
-        return {
-            "blocked": False,
-            "review_count": 0,
-            "reason": None,
-        }
-
-    target_columns = get_table_columns(
-        silver_conn,
-        TARGET_SCHEMA,
-        target_table,
-    )
-    target_map = {column["name"]: column for column in target_columns}
-
-    risky_changes = []
-    safe_changes = []
-    new_columns = []
-
-    for source_column in source_columns:
-        column_name = source_column["name"]
-        source_type = source_column["type"]
-
-        if column_name not in target_map:
-            new_columns.append(source_column)
-            continue
-
-        target_type = target_map[column_name]["type"]
-        classification = classify_datatype_change(
-            source_type,
-            target_type,
-        )
-
-        if classification == "SAFE_WIDEN":
-            safe_changes.append(
-                {
-                    "column_name": column_name,
-                    "source_type": source_type,
-                    "target_type": target_type,
-                }
-            )
-        elif classification == "MANUAL_REVIEW":
-            risky_changes.append(
-                {
-                    "column_name": column_name,
-                    "source_type": source_type,
-                    "target_type": target_type,
-                }
-            )
-
-    # Block before changing anything if a risky difference exists.
-    if risky_changes:
-        problem_details = "; ".join(
-            (
-                f'{change["column_name"]}: '
-                f'Bronze={change["source_type"]}, '
-                f'Silver={change["target_type"]}'
-            )
-            for change in risky_changes
-        )
-
-        control_message = (
-            f"{len(risky_changes)} datatype change(s) require developer review. "
-            f"Affected columns: {problem_details}. "
-            "The complete table load was blocked."
-        )
-
-        for change in risky_changes:
-            column_reason = (
-                "Risky or narrowing datatype change requires developer review. "
-                f'Column={change["column_name"]}, '
-                f'Bronze datatype={change["source_type"]}, '
-                f'Silver datatype={change["target_type"]}. '
-                "The complete table load was blocked."
-            )
-
-            log_schema_review(
-                silver_conn,
-                source_table,
-                target_table,
-                change["column_name"],
-                change["source_type"],
-                change["target_type"],
-                "MANUAL_REVIEW_REQUIRED",
-                column_reason,
-            )
-
-            log_error(
-                silver_conn,
-                source_table,
-                target_table,
-                "SCHEMA_VALIDATION",
-                column_reason,
-                severity="CRITICAL",
-                column_name=change["column_name"],
-                source_datatype=change["source_type"],
-                target_datatype=change["target_type"],
-            )
-
-        return {
-            "blocked": True,
-            "review_count": len(risky_changes),
-            "reason": control_message,
-        }
-
-    # Check dependent views and materialized views before safe ALTERs.
-    dependency_blocks = []
-
-    for change in safe_changes:
-        dependencies = get_column_dependencies(
-            silver_conn,
-            TARGET_SCHEMA,
-            target_table,
-            change["column_name"],
-        )
-
-        if dependencies:
-            dependency_blocks.append(
-                {
-                    **change,
-                    "dependencies": dependencies,
-                }
-            )
-
-    if dependency_blocks:
-        dependency_messages = []
-
-        for change in dependency_blocks:
-            dependency_text = format_dependencies(change["dependencies"])
-
-            reason = (
-                "Datatype change is classified as safe, but dependent database "
-                "objects prevent ALTER COLUMN TYPE. "
-                f'Column={change["column_name"]}, '
-                f'Bronze datatype={change["source_type"]}, '
-                f'Silver datatype={change["target_type"]}, '
-                f'Dependent objects={dependency_text}. '
-                "Developer must review and recreate or update the dependent "
-                "objects before rerunning this table."
-            )
-
-            dependency_messages.append(
-                (
-                    f'{change["column_name"]}: '
-                    f'Bronze={change["source_type"]}, '
-                    f'Silver={change["target_type"]}, '
-                    f'Dependencies={dependency_text}'
-                )
-            )
-
-            log_schema_review(
-                silver_conn,
-                source_table,
-                target_table,
-                change["column_name"],
-                change["source_type"],
-                change["target_type"],
-                "DEPENDENT_OBJECT_REVIEW_REQUIRED",
-                reason,
-            )
-
-            log_error(
-                silver_conn,
-                source_table,
-                target_table,
-                "COLUMN_DEPENDENCY_CHECK",
-                reason,
-                severity="CRITICAL",
-                column_name=change["column_name"],
-                source_datatype=change["source_type"],
-                target_datatype=change["target_type"],
-            )
-
-        return {
-            "blocked": True,
-            "review_count": len(dependency_blocks),
-            "reason": (
-                f"{len(dependency_blocks)} datatype change(s) are blocked by "
-                "dependent database objects. Affected columns: "
-                + "; ".join(dependency_messages)
-                + ". The complete table load was blocked."
-            ),
-        }
-
-    # Add new columns and apply safe changes only after all validation passes.
-    try:
-        with silver_conn.cursor() as cur:
-            for column in new_columns:
-                cur.execute(
-                    sql.SQL(
-                        "ALTER TABLE {}.{} ADD COLUMN {} {}"
-                    ).format(
-                        sql.Identifier(TARGET_SCHEMA),
-                        sql.Identifier(target_table),
-                        sql.Identifier(column["name"]),
-                        sql.SQL(column["type"]),
-                    )
-                )
-
-            for change in safe_changes:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        ALTER TABLE {}.{}
-                        ALTER COLUMN {} TYPE {}
-                        USING {}::{}
-                        """
-                    ).format(
-                        sql.Identifier(TARGET_SCHEMA),
-                        sql.Identifier(target_table),
-                        sql.Identifier(change["column_name"]),
-                        sql.SQL(change["source_type"]),
-                        sql.Identifier(change["column_name"]),
-                        sql.SQL(change["source_type"]),
-                    )
-                )
-
-        silver_conn.commit()
-
-    except Exception as exc:
-        silver_conn.rollback()
-
-        affected_columns = ", ".join(
-            (
-                f'{change["column_name"]} '
-                f'({change["target_type"]} -> {change["source_type"]})'
-            )
-            for change in safe_changes
-        )
-
-        reason = (
-            "An approved safe schema change failed. "
-            f"Affected columns: {affected_columns or 'unknown'}. "
-            f"PostgreSQL error: {exc}. "
-            "The complete table load was blocked."
-        )
-
-        log_error(
-            silver_conn,
-            source_table,
-            target_table,
-            "APPLY_SCHEMA_CHANGE",
-            reason,
-            severity="CRITICAL",
-            error_detail=traceback.format_exc(),
-        )
-
-        return {
-            "blocked": True,
-            "review_count": max(len(safe_changes), 1),
-            "reason": reason,
-        }
-
-    return {
-        "blocked": False,
-        "review_count": 0,
-        "reason": None,
-    }
-
-
-###############################################################################
-# STEP 8 - TEMP TABLE, BULK COPY AND MERGE
-#
-# A PostgreSQL session TEMP table is created for the current table.
-#
-# Data transfer:
-#   Bronze COPY TO STDOUT
-#       -> temporary disk-backed transfer file
-#       -> Silver COPY FROM STDIN into the TEMP table
-#
-# Merge:
-#   INSERT INTO target
-#   SELECT FROM temp
-#   ON CONFLICT(primary key)
-#   DO UPDATE
-#
-# The TEMP table is explicitly dropped after processing and would also disappear
-# automatically when the Silver connection closes.
-###############################################################################
-
-def create_temp_table(
-    silver_conn,
-    source_table,
-    target_table,
-    source_columns,
-):
-    temp_table = f"tmp_{target_table}_{RUN_ID[:8]}"
-
-    column_list = sql.SQL(", ").join(
-        sql.Identifier(column["name"]) for column in source_columns
-    )
-
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TEMP TABLE {} AS
-                SELECT {}
-                FROM {}.{}
-                WITH NO DATA
-                """
-            ).format(
-                sql.Identifier(temp_table),
-                column_list,
-                sql.Identifier(TARGET_SCHEMA),
-                sql.Identifier(target_table),
-            )
-        )
-
-    return temp_table
-
-
-def copy_bronze_to_temp(
-    bronze_conn,
-    silver_conn,
-    source_table,
-    temp_table,
-    source_columns,
-):
-    column_list = sql.SQL(", ").join(
-        sql.Identifier(column["name"]) for column in source_columns
-    )
-
-    source_copy = sql.SQL(
-        """
-        COPY
-        (
-            SELECT {}
-            FROM {}.{}
-        )
-        TO STDOUT
-        WITH
-        (
-            FORMAT CSV,
-            HEADER FALSE,
-            NULL '\\N',
-            QUOTE '"',
-            ESCAPE '"'
-        )
-        """
-    ).format(
-        column_list,
-        sql.Identifier(SOURCE_SCHEMA),
-        sql.Identifier(source_table),
-    )
-
-    target_copy = sql.SQL(
-        """
-        COPY {} ({})
-        FROM STDIN
-        WITH
-        (
-            FORMAT CSV,
-            HEADER FALSE,
-            NULL '\\N',
-            QUOTE '"',
-            ESCAPE '"'
-        )
-        """
-    ).format(
-        sql.Identifier(temp_table),
-        column_list,
-    )
-
-    # Disk-backed temporary file prevents the entire table being stored
-    # in Python memory.
-    with tempfile.TemporaryFile(
-        mode="w+",
-        encoding="utf-8",
-        newline="",
-    ) as transfer_file:
-        with bronze_conn.cursor() as bronze_cur:
-            bronze_cur.copy_expert(
-                source_copy.as_string(bronze_conn),
-                transfer_file,
-            )
-
-        transfer_file.seek(0)
-
-        with silver_conn.cursor() as silver_cur:
-            silver_cur.copy_expert(
-                target_copy.as_string(silver_conn),
-                transfer_file,
-            )
-
-
-def merge_temp_to_target(
-    silver_conn,
-    temp_table,
-    target_table,
-    source_columns,
-    primary_keys,
-):
-    column_names = [column["name"] for column in source_columns]
-
-    insert_columns = sql.SQL(", ").join(
-        sql.Identifier(column) for column in column_names
-    )
-
-    update_columns = [
-        column for column in column_names if column not in primary_keys
+    return results
+
+
+def write_csv(rows: list[dict]) -> None:
+    """Write the Jira-ready DMS inventory report."""
+    fieldnames = [
+        "task_name",
+        "table_owner",
+        "table_name",
+        "error_time",
+        "category",
+        "error",
+        "statement",
     ]
 
-    if update_columns:
-        conflict_action = sql.SQL("DO UPDATE SET {}").format(
-            sql.SQL(", ").join(
-                sql.SQL("{} = EXCLUDED.{}").format(
-                    sql.Identifier(column),
-                    sql.Identifier(column),
-                )
-                for column in update_columns
-            )
+    with open(
+        OUTPUT_FILE,
+        "w",
+        newline="",
+        encoding="utf-8-sig",
+    ) as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=fieldnames,
         )
-    else:
-        conflict_action = sql.SQL("DO NOTHING")
+        writer.writeheader()
 
-    merge_statement = sql.SQL(
-        """
-        INSERT INTO {}.{} ({})
-        SELECT {}
-        FROM {}
-        ON CONFLICT ({})
-        {}
-        """
-    ).format(
-        sql.Identifier(TARGET_SCHEMA),
-        sql.Identifier(target_table),
-        insert_columns,
-        insert_columns,
-        sql.Identifier(temp_table),
-        sql.SQL(", ").join(
-            sql.Identifier(column) for column in primary_keys
-        ),
-        conflict_action,
+        for row in rows:
+            output_row = row.copy()
+
+            if isinstance(output_row["error_time"], datetime):
+                output_row["error_time"] = (
+                    output_row["error_time"].isoformat(
+                        sep=" ",
+                        timespec="seconds",
+                    )
+                )
+
+            writer.writerow(output_row)
+
+
+def print_summary(rows: list[dict]) -> None:
+    """Print totals by failure category."""
+    category_counts = Counter(
+        row["category"]
+        for row in rows
     )
 
-    with silver_conn.cursor() as cur:
-        cur.execute(merge_statement)
-        affected_rows = cur.rowcount
+    table_counts = Counter(
+        f'{row["table_owner"]}.{row["table_name"]}'
+        for row in rows
+    )
 
-    silver_conn.commit()
-    return affected_rows
+    print("\nDMS TASK FAILURE INVENTORY")
+    print("=" * 60)
+    print(f"Period             : Last {DAYS_BACK} days")
+    print(f"Total failure rows : {len(rows)}")
+    print(f"Output file        : {OUTPUT_FILE}")
+
+    print("\nFailures by category")
+    print("-" * 60)
+
+    for category, count in category_counts.most_common():
+        print(f"{category}: {count}")
+
+    print("\nTop affected tables")
+    print("-" * 60)
+
+    for table_name, count in table_counts.most_common(10):
+        print(f"{table_name}: {count}")
 
 
-def drop_temp_table(silver_conn, temp_table):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL("DROP TABLE IF EXISTS {}")
-            .format(sql.Identifier(temp_table))
-        )
-    silver_conn.commit()
-
-
-###############################################################################
-# STEP 9 - PROCESS ONE TABLE
-#
-# For each table, the framework performs the following sequence:
-#
-#   1. Read source columns.
-#   2. Determine the primary key.
-#   3. Count Bronze rows.
-#   4. Compare and synchronize the Silver schema.
-#   5. Block the table if any schema review is required.
-#   6. Create the TEMP table.
-#   7. COPY Bronze data to the TEMP table.
-#   8. Merge TEMP data into Silver.
-#   9. Count Silver rows.
-#  10. Drop the TEMP table.
-#  11. Write the final control-table record.
-#
-# Any failure is isolated to the current table. The framework then continues
-# with the remaining CLM tables.
-###############################################################################
-
-def process_table(
-    bronze_conn,
-    silver_conn,
-    source_table,
-    target_table,
-    primary_key_override=None,
-):
-    start_datetime = datetime.now(timezone.utc)
-
-    bronze_count = None
-    silver_count = None
-    rows_processed = 0
-    status = "FAILED"
-    schema_review_required = False
-    error_count = 0
-    message = None
-    temp_table = None
-
+def main() -> int:
     try:
-        print("=" * 80)
-        print(
-            f"Processing {SOURCE_SCHEMA}.{source_table} "
-            f"-> {TARGET_SCHEMA}.{target_table}"
-        )
+        validate_configuration()
 
-        source_columns = get_table_columns(
-            bronze_conn,
-            SOURCE_SCHEMA,
-            source_table,
-        )
+        print("Connecting to PostgreSQL...")
+        print(f"Host: {DB_HOST}")
+        print(f"Database: {DB_NAME}")
+        print(f"Reading the last {DAYS_BACK} days...")
 
-        if not source_columns:
-            raise RuntimeError("No Bronze columns were found.")
+        failures = pull_failures()
+        write_csv(failures)
+        print_summary(failures)
 
-        if primary_key_override:
-            primary_keys = [
-                value.strip()
-                for value in primary_key_override.split(",")
-                if value.strip()
-            ]
-        else:
-            primary_keys = get_primary_keys(
-                bronze_conn,
-                SOURCE_SCHEMA,
-                source_table,
-            )
+        return 0
 
-        if not primary_keys:
-            raise RuntimeError(
-                "No primary key was found. Add primary_key_override "
-                "to etl_control.etl_table_config."
-            )
-
-        source_column_names = {
-            column["name"] for column in source_columns
-        }
-
-        missing_primary_keys = [
-            key for key in primary_keys
-            if key not in source_column_names
-        ]
-
-        if missing_primary_keys:
-            raise RuntimeError(
-                "Primary-key columns are missing from Bronze: "
-                + ", ".join(missing_primary_keys)
-            )
-
-        bronze_count = get_row_count(
-            bronze_conn,
-            SOURCE_SCHEMA,
-            source_table,
-        )
-
-        schema_result = synchronize_target_schema(
-            silver_conn,
-            source_table,
-            target_table,
-            source_columns,
-            primary_keys,
-        )
-
-        if schema_result["blocked"]:
-            status = "BLOCKED_SCHEMA_REVIEW"
-            schema_review_required = True
-            error_count += schema_result["review_count"]
-            message = schema_result["reason"]
-
-            if table_exists(
-                silver_conn,
-                TARGET_SCHEMA,
-                target_table,
-            ):
-                silver_count = get_row_count(
-                    silver_conn,
-                    TARGET_SCHEMA,
-                    target_table,
-                )
-
-            print(
-                f"[{source_table}] BLOCKED: {message}"
-            )
-            return
-
-        temp_table = create_temp_table(
-            silver_conn,
-            source_table,
-            target_table,
-            source_columns,
-        )
-
-        copy_bronze_to_temp(
-            bronze_conn,
-            silver_conn,
-            source_table,
-            temp_table,
-            source_columns,
-        )
-
-        rows_processed = merge_temp_to_target(
-            silver_conn,
-            temp_table,
-            target_table,
-            source_columns,
-            primary_keys,
-        )
-
-        silver_count = get_row_count(
-            silver_conn,
-            TARGET_SCHEMA,
-            target_table,
-        )
-
-        status = "SUCCESS"
-        message = "Table loaded successfully."
+    except psycopg2.Error as exc:
+        print("\nPostgreSQL error:")
+        print(exc)
+        return 1
 
     except Exception as exc:
-        silver_conn.rollback()
-        status = "FAILED"
-        error_count += 1
-        message = str(exc)
-
-        log_error(
-            silver_conn,
-            source_table,
-            target_table,
-            "PROCESS_TABLE",
-            str(exc),
-            severity="ERROR",
-            error_detail=traceback.format_exc(),
-        )
-
-        try:
-            if table_exists(
-                silver_conn,
-                TARGET_SCHEMA,
-                target_table,
-            ):
-                silver_count = get_row_count(
-                    silver_conn,
-                    TARGET_SCHEMA,
-                    target_table,
-                )
-        except Exception:
-            silver_conn.rollback()
-
-    finally:
-        if temp_table:
-            try:
-                drop_temp_table(silver_conn, temp_table)
-            except Exception as cleanup_error:
-                silver_conn.rollback()
-                error_count += 1
-
-                if status == "SUCCESS":
-                    status = "PARTIAL_SUCCESS"
-
-                log_error(
-                    silver_conn,
-                    source_table,
-                    target_table,
-                    "DROP_TEMP_TABLE",
-                    str(cleanup_error),
-                    severity="WARNING",
-                    error_detail=traceback.format_exc(),
-                )
-
-        end_datetime = datetime.now(timezone.utc)
-
-        write_control_record(
-            silver_conn,
-            source_table,
-            target_table,
-            bronze_count,
-            silver_count,
-            rows_processed,
-            status,
-            schema_review_required,
-            start_datetime,
-            end_datetime,
-            error_count,
-            message,
-        )
-
-        print(
-            f"[{source_table}] status={status}, "
-            f"bronze_count={bronze_count}, "
-            f"silver_count={silver_count}, "
-            f"rows_processed={rows_processed}, "
-            f"error_count={error_count}"
-        )
-
-
-###############################################################################
-# STEP 10 - FRAMEWORK ENTRY POINT
-#
-# The main function:
-#   - Opens Bronze and Silver connections
-#   - Creates framework control tables
-#   - Discovers all CLM tables
-#   - Applies optional metadata configuration
-#   - Processes tables one by one
-#   - Closes all database connections
-###############################################################################
-
-def main():
-    bronze_conn = None
-    silver_conn = None
-
-    try:
-        bronze_conn = connect_bronze()
-        silver_conn = connect_silver()
-
-        create_framework_tables(silver_conn)
-
-        discovered_tables = discover_source_tables(bronze_conn)
-        configured_tables = get_enabled_config(silver_conn)
-
-        # When config has rows, it controls which tables run.
-        # When config is empty, all discovered CLM tables are loaded.
-        if configured_tables:
-            table_jobs = []
-
-            for source_table, settings in configured_tables.items():
-                if source_table in discovered_tables:
-                    table_jobs.append(
-                        (
-                            source_table,
-                            settings["target_table"],
-                            settings["primary_key_override"],
-                        )
-                    )
-        else:
-            table_jobs = [
-                (table_name, table_name, None)
-                for table_name in discovered_tables
-            ]
-
-        if not table_jobs:
-            print("No enabled CLM tables were found.")
-            return
-
-        print(
-            f"Starting framework run {RUN_ID}. "
-            f"Tables selected: {len(table_jobs)}"
-        )
-
-        # A failure or blocked schema in one table does not stop the next table.
-        for source_table, target_table, pk_override in table_jobs:
-            process_table(
-                bronze_conn,
-                silver_conn,
-                source_table,
-                target_table,
-                pk_override,
-            )
-
-        print(f"Framework run {RUN_ID} completed.")
-
-    except Exception as framework_error:
-        print(f"Framework-level failure: {framework_error}")
-        print(traceback.format_exc())
-        raise
-
-    finally:
-        if bronze_conn is not None:
-            bronze_conn.close()
-
-        if silver_conn is not None:
-            silver_conn.close()
+        print(f"\nError: {exc}")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
