@@ -1,6 +1,6 @@
 ###############################################################################
 #
-# CLM BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
+# MULTI-SCHEMA BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
 #
 # Technology:
 #   AWS Glue Python Shell / Spark Job runtime
@@ -9,7 +9,7 @@
 #   PostgreSQL
 #
 # Purpose:
-#   This framework loads every enabled CLM table from the Bronze PostgreSQL
+#   This framework loads every enabled table across configured schemas from the Bronze PostgreSQL
 #   database into the Silver PostgreSQL database using one reusable script.
 #
 # Main capabilities:
@@ -162,6 +162,33 @@ def create_framework_tables(silver_conn):
         cur.execute(
             sql.SQL("CREATE SCHEMA IF NOT EXISTS {}")
             .format(sql.Identifier(CONTROL_SCHEMA))
+        )
+
+        # Schema-level mapping configuration.
+        #
+        # Each enabled row maps one Bronze schema to one Silver schema.
+        # Example:
+        #     CLM  -> CLM
+        #     SOTV -> SOTV
+        #     FIN  -> FINANCE
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.etl_schema_config
+                (
+                    schema_config_id  bigserial PRIMARY KEY,
+                    source_schema     varchar(255) NOT NULL,
+                    target_schema     varchar(255) NOT NULL,
+                    enabled           boolean NOT NULL DEFAULT true,
+                    load_order        integer NOT NULL DEFAULT 100,
+                    created_datetime  timestamptz NOT NULL
+                                      DEFAULT CURRENT_TIMESTAMP,
+                    updated_datetime  timestamptz NOT NULL
+                                      DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (source_schema, target_schema)
+                )
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
         )
 
         # Optional metadata-driven configuration.
@@ -505,7 +532,19 @@ def discover_source_tables(bronze_conn):
     return tables
 
 
-def get_enabled_config(silver_conn):
+def get_table_config(
+    silver_conn,
+    source_schema,
+    target_schema,
+):
+    """
+    Return table-level overrides for one schema mapping.
+
+    Important behavior:
+      - No config row: table is included automatically.
+      - enabled = false: table is excluded.
+      - enabled = true: table is included and overrides may be applied.
+    """
     with silver_conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -513,26 +552,148 @@ def get_enabled_config(silver_conn):
                 SELECT
                     source_table,
                     target_table,
-                    primary_key_override
+                    enabled,
+                    primary_key_override,
+                    load_order
                 FROM {}.etl_table_config
                 WHERE source_schema = %s
                   AND target_schema = %s
-                  AND enabled = true
-                ORDER BY load_order, source_table
                 """
             ).format(sql.Identifier(CONTROL_SCHEMA)),
-            (SOURCE_SCHEMA, TARGET_SCHEMA),
+            (source_schema, target_schema),
         )
 
         return {
             row[0]: {
                 "target_table": row[1],
-                "primary_key_override": row[2],
+                "enabled": row[2],
+                "primary_key_override": row[3],
+                "load_order": row[4],
             }
             for row in cur.fetchall()
         }
 
 
+def get_schema_mappings(silver_conn):
+    """
+    Read all enabled Bronze-to-Silver schema mappings.
+
+    If the table is empty, the framework falls back to the environment/default
+    SOURCE_SCHEMA -> TARGET_SCHEMA mapping for backward compatibility.
+    """
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                    source_schema,
+                    target_schema,
+                    load_order
+                FROM {}.etl_schema_config
+                WHERE enabled = true
+                ORDER BY load_order, source_schema, target_schema
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+        mappings = cur.fetchall()
+
+    if mappings:
+        return [
+            {
+                "source_schema": row[0],
+                "target_schema": row[1],
+                "load_order": row[2],
+            }
+            for row in mappings
+        ]
+
+    return [
+        {
+            "source_schema": SOURCE_SCHEMA,
+            "target_schema": TARGET_SCHEMA,
+            "load_order": 100,
+        }
+    ]
+
+
+def build_table_jobs(bronze_conn, silver_conn):
+    """
+    Build the complete ordered work list across all enabled schema mappings.
+
+    A job contains:
+      source_schema
+      source_table
+      target_schema
+      target_table
+      primary_key_override
+      load_order
+    """
+    table_jobs = []
+
+    for schema_mapping in get_schema_mappings(silver_conn):
+        source_schema = schema_mapping["source_schema"]
+        target_schema = schema_mapping["target_schema"]
+
+        # discover_source_tables() currently reads the global SOURCE_SCHEMA.
+        # Temporarily assign the mapping while building this sequential worklist.
+        global SOURCE_SCHEMA, TARGET_SCHEMA
+        SOURCE_SCHEMA = source_schema
+        TARGET_SCHEMA = target_schema
+
+        discovered_tables = discover_source_tables(bronze_conn)
+        table_config = get_table_config(
+            silver_conn,
+            source_schema,
+            target_schema,
+        )
+
+        for source_table in discovered_tables:
+            config = table_config.get(source_table)
+
+            # A disabled metadata row explicitly excludes the table.
+            if config and not config["enabled"]:
+                print(
+                    f"Skipping excluded table "
+                    f"{source_schema}.{source_table}"
+                )
+                continue
+
+            target_table = (
+                config["target_table"]
+                if config and config["target_table"]
+                else source_table
+            )
+
+            table_jobs.append(
+                {
+                    "source_schema": source_schema,
+                    "source_table": source_table,
+                    "target_schema": target_schema,
+                    "target_table": target_table,
+                    "primary_key_override": (
+                        config["primary_key_override"]
+                        if config
+                        else None
+                    ),
+                    "schema_load_order": schema_mapping["load_order"],
+                    "table_load_order": (
+                        config["load_order"]
+                        if config
+                        else 1000
+                    ),
+                }
+            )
+
+    table_jobs.sort(
+        key=lambda job: (
+            job["schema_load_order"],
+            job["table_load_order"],
+            job["source_schema"],
+            job["source_table"],
+        )
+    )
+
+    return table_jobs
 def table_exists(conn, schema_name, table_name):
     with conn.cursor() as cur:
         cur.execute(
@@ -834,42 +995,89 @@ def get_column_dependencies(
     column_name,
 ):
     """
-    Return views and materialized views that depend directly on a target
-    table column. PostgreSQL blocks ALTER COLUMN TYPE while these objects
-    depend on the column.
+    Return direct and indirect views/materialized views that depend on a
+    target-table column.
+
+    Direct example:
+        table.column -> materialized_view
+
+    Indirect example:
+        table.column -> view_1 -> materialized_view_2
+
+    PostgreSQL blocks ALTER COLUMN TYPE when a dependent view or materialized
+    view exists anywhere in the dependency chain.
     """
     with silver_conn.cursor() as cur:
         cur.execute(
             """
+            WITH RECURSIVE dependency_tree AS
+            (
+                -- Level 1: objects directly dependent on the source column.
+                SELECT DISTINCT
+                    dependent_class.oid AS dependent_oid,
+                    dependent_ns.nspname AS dependent_schema,
+                    dependent_class.relname AS dependent_object,
+                    dependent_class.relkind AS dependent_relkind,
+                    1 AS dependency_level
+                FROM pg_catalog.pg_depend dep
+                JOIN pg_catalog.pg_rewrite rewrite_rule
+                  ON rewrite_rule.oid = dep.objid
+                JOIN pg_catalog.pg_class dependent_class
+                  ON dependent_class.oid = rewrite_rule.ev_class
+                JOIN pg_catalog.pg_namespace dependent_ns
+                  ON dependent_ns.oid = dependent_class.relnamespace
+                JOIN pg_catalog.pg_class source_class
+                  ON source_class.oid = dep.refobjid
+                JOIN pg_catalog.pg_namespace source_ns
+                  ON source_ns.oid = source_class.relnamespace
+                JOIN pg_catalog.pg_attribute source_attribute
+                  ON source_attribute.attrelid = source_class.oid
+                 AND source_attribute.attnum = dep.refobjsubid
+                WHERE source_ns.nspname = %s
+                  AND source_class.relname = %s
+                  AND source_attribute.attname = %s
+                  AND dep.refobjsubid > 0
+                  AND dependent_class.relkind IN ('v', 'm')
+
+                UNION
+
+                -- Next levels: objects that depend on an already dependent
+                -- view or materialized view.
+                SELECT DISTINCT
+                    next_class.oid AS dependent_oid,
+                    next_ns.nspname AS dependent_schema,
+                    next_class.relname AS dependent_object,
+                    next_class.relkind AS dependent_relkind,
+                    tree.dependency_level + 1
+                FROM dependency_tree tree
+                JOIN pg_catalog.pg_depend next_dep
+                  ON next_dep.refobjid = tree.dependent_oid
+                JOIN pg_catalog.pg_rewrite next_rewrite
+                  ON next_rewrite.oid = next_dep.objid
+                JOIN pg_catalog.pg_class next_class
+                  ON next_class.oid = next_rewrite.ev_class
+                JOIN pg_catalog.pg_namespace next_ns
+                  ON next_ns.oid = next_class.relnamespace
+                WHERE next_class.relkind IN ('v', 'm')
+                  AND tree.dependency_level < 20
+                  AND next_class.oid <> tree.dependent_oid
+            )
             SELECT DISTINCT
-                dependent_ns.nspname AS dependent_schema,
-                dependent_class.relname AS dependent_object,
-                CASE dependent_class.relkind
+                dependent_schema,
+                dependent_object,
+                CASE dependent_relkind
                     WHEN 'v' THEN 'VIEW'
                     WHEN 'm' THEN 'MATERIALIZED VIEW'
-                    ELSE 'RULE'
-                END AS dependent_object_type
-            FROM pg_catalog.pg_depend dep
-            JOIN pg_catalog.pg_rewrite rewrite_rule
-              ON rewrite_rule.oid = dep.objid
-            JOIN pg_catalog.pg_class dependent_class
-              ON dependent_class.oid = rewrite_rule.ev_class
-            JOIN pg_catalog.pg_namespace dependent_ns
-              ON dependent_ns.oid = dependent_class.relnamespace
-            JOIN pg_catalog.pg_class source_class
-              ON source_class.oid = dep.refobjid
-            JOIN pg_catalog.pg_namespace source_ns
-              ON source_ns.oid = source_class.relnamespace
-            JOIN pg_catalog.pg_attribute source_attribute
-              ON source_attribute.attrelid = source_class.oid
-             AND source_attribute.attnum = dep.refobjsubid
-            WHERE source_ns.nspname = %s
-              AND source_class.relname = %s
-              AND source_attribute.attname = %s
-              AND dep.refobjsubid > 0
-              AND dependent_class.relkind IN ('v', 'm')
+                    ELSE dependent_relkind::text
+                END AS dependent_object_type,
+                MIN(dependency_level) AS dependency_level
+            FROM dependency_tree
+            GROUP BY
+                dependent_schema,
+                dependent_object,
+                dependent_relkind
             ORDER BY
-                dependent_object_type,
+                MIN(dependency_level),
                 dependent_schema,
                 dependent_object
             """,
@@ -881,16 +1089,16 @@ def get_column_dependencies(
                 "schema": row[0],
                 "object": row[1],
                 "type": row[2],
+                "level": row[3],
             }
             for row in cur.fetchall()
         ]
-
 
 def format_dependencies(dependencies):
     return ", ".join(
         (
             f'{dependency["schema"]}.{dependency["object"]} '
-            f'({dependency["type"]})'
+            f'({dependency["type"]}, level={dependency.get("level", 1)})'
         )
         for dependency in dependencies
     )
@@ -1724,46 +1932,34 @@ def main():
 
         create_framework_tables(silver_conn)
 
-        discovered_tables = discover_source_tables(bronze_conn)
-        configured_tables = get_enabled_config(silver_conn)
-
-        # When config has rows, it controls which tables run.
-        # When config is empty, all discovered CLM tables are loaded.
-        if configured_tables:
-            table_jobs = []
-
-            for source_table, settings in configured_tables.items():
-                if source_table in discovered_tables:
-                    table_jobs.append(
-                        (
-                            source_table,
-                            settings["target_table"],
-                            settings["primary_key_override"],
-                        )
-                    )
-        else:
-            table_jobs = [
-                (table_name, table_name, None)
-                for table_name in discovered_tables
-            ]
+        table_jobs = build_table_jobs(
+            bronze_conn,
+            silver_conn,
+        )
 
         if not table_jobs:
-            print("No enabled CLM tables were found.")
+            print("No enabled source tables were found.")
             return
 
         print(
             f"Starting framework run {RUN_ID}. "
-            f"Tables selected: {len(table_jobs)}"
+            f"Tables selected across all schemas: {len(table_jobs)}"
         )
 
-        # A failure or blocked schema in one table does not stop the next table.
-        for source_table, target_table, pk_override in table_jobs:
+        # Processing is sequential, so global schema values can safely be
+        # assigned for the current table without cross-table interference.
+        for table_job in table_jobs:
+            global SOURCE_SCHEMA, TARGET_SCHEMA
+
+            SOURCE_SCHEMA = table_job["source_schema"]
+            TARGET_SCHEMA = table_job["target_schema"]
+
             process_table(
                 bronze_conn,
                 silver_conn,
-                source_table,
-                target_table,
-                pk_override,
+                table_job["source_table"],
+                table_job["target_table"],
+                table_job["primary_key_override"],
             )
 
         print(f"Framework run {RUN_ID} completed.")
