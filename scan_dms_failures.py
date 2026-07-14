@@ -1,3 +1,42 @@
+###############################################################################
+#
+# CLM BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
+#
+# Technology:
+#   AWS Glue Python Shell / Spark Job runtime
+#   Python
+#   psycopg2
+#   PostgreSQL
+#
+# Purpose:
+#   This framework loads every enabled CLM table from the Bronze PostgreSQL
+#   database into the Silver PostgreSQL database using one reusable script.
+#
+# Main capabilities:
+#   1. Discover all CLM source tables automatically.
+#   2. Optionally use a metadata configuration table to control processing.
+#   3. Detect new Bronze columns and add them to Silver.
+#   4. Preserve Silver columns that no longer exist in Bronze.
+#   5. Apply only approved safe datatype widening changes automatically.
+#   6. Block the complete table when a risky datatype change is detected.
+#   7. Check for dependent views and materialized views before changing types.
+#   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
+#   9. Use PostgreSQL COPY for efficient bulk data transfer.
+#  10. Use INSERT ... ON CONFLICT ... DO UPDATE for upsert processing.
+#  11. Store daily source/target counts in the load-control table.
+#  12. Store processing failures in the error table.
+#  13. Store datatype issues in the schema-review table.
+#  14. Continue with the next table when one table fails or is blocked.
+#
+# Important design rules:
+#   - Never drop a Silver column automatically.
+#   - Never partially load a table when a datatype issue is found.
+#   - Never automatically apply risky or narrowing datatype changes.
+#   - Never alter a datatype while dependent database objects exist.
+#   - Always record a final control-table entry for every attempted table.
+#
+###############################################################################
+
 import os
 import uuid
 import tempfile
@@ -9,7 +48,16 @@ from psycopg2 import sql
 
 
 ###############################################################################
-# CONFIGURATION
+# STEP 0 - FRAMEWORK CONFIGURATION
+#
+# This section defines:
+#   - Bronze and Silver PostgreSQL connection properties
+#   - Source, target and control schemas
+#   - Job name and run identifier
+#   - Optional include/exclude table lists
+#
+# Credentials should ideally come from AWS Secrets Manager. Environment
+# variables are used here so that passwords do not need to be hardcoded.
 ###############################################################################
 
 # Bronze PostgreSQL
@@ -54,7 +102,13 @@ EXCLUDE_TABLES = {
 
 
 ###############################################################################
-# DATABASE CONNECTIONS
+# STEP 1 - DATABASE CONNECTION HELPERS
+#
+# Two independent psycopg2 connections are created:
+#   - Bronze connection: reads source metadata and data
+#   - Silver connection: manages target schema, TEMP tables, merge and auditing
+#
+# Connections are opened once for the framework run and reused for all tables.
 ###############################################################################
 
 def connect_bronze():
@@ -82,7 +136,24 @@ def connect_silver():
 
 
 ###############################################################################
-# FRAMEWORK TABLES
+# STEP 2 - CREATE FRAMEWORK CONTROL TABLES
+#
+# The following tables are created in the Silver control schema:
+#
+# etl_table_config
+#   Optional metadata table used to enable/disable tables, set execution order,
+#   rename targets, and provide primary-key overrides.
+#
+# etl_load_control
+#   Stores one audit row per table per framework execution, including Bronze
+#   count, Silver count, rows processed, status, timing and message.
+#
+# etl_error_log
+#   Stores technical failures such as connection, COPY, merge or cleanup errors.
+#
+# etl_schema_change_review
+#   Stores risky datatype differences and dependency-related schema changes that
+#   require developer review before the table can be loaded.
 ###############################################################################
 
 def create_framework_tables(silver_conn):
@@ -213,7 +284,18 @@ def create_framework_tables(silver_conn):
 
 
 ###############################################################################
-# AUDIT HELPERS
+# STEP 3 - AUDIT AND ERROR-LOGGING HELPERS
+#
+# These functions isolate the logging logic from the loading logic.
+#
+# log_error()
+#   Inserts technical error details into etl_error_log.
+#
+# log_schema_review()
+#   Inserts one review record for each affected column.
+#
+# write_control_record()
+#   Writes the final table-level execution result to etl_load_control.
 ###############################################################################
 
 def log_error(
@@ -387,7 +469,16 @@ def write_control_record(
 
 
 ###############################################################################
-# METADATA HELPERS
+# STEP 4 - POSTGRESQL METADATA DISCOVERY
+#
+# Metadata is read directly from PostgreSQL system catalogs.
+#
+# The framework discovers:
+#   - All source base tables
+#   - Enabled metadata configuration
+#   - Ordered table columns and exact PostgreSQL datatypes
+#   - Declared primary-key columns
+#   - Current source and target row counts
 ###############################################################################
 
 def discover_source_tables(bronze_conn):
@@ -534,7 +625,22 @@ def get_row_count(conn, schema_name, table_name):
 
 
 ###############################################################################
-# DATATYPE RULES
+# STEP 5 - DATATYPE CLASSIFICATION RULES
+#
+# Every Bronze/Silver datatype difference is classified as:
+#
+# SAME
+#   Datatypes are identical.
+#
+# COMPATIBLE
+#   Silver is already wide enough to accept the Bronze values.
+#
+# SAFE_WIDEN
+#   Silver can be safely widened automatically.
+#
+# MANUAL_REVIEW
+#   The change may truncate, reinterpret or reject existing data.
+#   The entire table is blocked and no data is loaded.
 ###############################################################################
 
 def normalize_type(type_name):
@@ -665,7 +771,111 @@ def classify_datatype_change(source_type, target_type):
 
 
 ###############################################################################
-# TARGET SCHEMA MANAGEMENT
+# STEP 6 - DEPENDENT OBJECT CHECKS
+#
+# PostgreSQL does not allow ALTER COLUMN TYPE when views or materialized views
+# depend on the affected column.
+#
+# Before applying a safe datatype change, the framework searches PostgreSQL
+# dependency catalogs and returns:
+#   - Dependent schema
+#   - Dependent object name
+#   - Object type
+#
+# If dependencies exist:
+#   - ALTER TABLE is not attempted
+#   - The entire table load is blocked
+#   - Dependency details are written to the control, error and review tables
+###############################################################################
+
+def get_column_dependencies(
+    silver_conn,
+    schema_name,
+    table_name,
+    column_name,
+):
+    """
+    Return views and materialized views that depend directly on a target
+    table column. PostgreSQL blocks ALTER COLUMN TYPE while these objects
+    depend on the column.
+    """
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT
+                dependent_ns.nspname AS dependent_schema,
+                dependent_class.relname AS dependent_object,
+                CASE dependent_class.relkind
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    ELSE 'RULE'
+                END AS dependent_object_type
+            FROM pg_catalog.pg_depend dep
+            JOIN pg_catalog.pg_rewrite rewrite_rule
+              ON rewrite_rule.oid = dep.objid
+            JOIN pg_catalog.pg_class dependent_class
+              ON dependent_class.oid = rewrite_rule.ev_class
+            JOIN pg_catalog.pg_namespace dependent_ns
+              ON dependent_ns.oid = dependent_class.relnamespace
+            JOIN pg_catalog.pg_class source_class
+              ON source_class.oid = dep.refobjid
+            JOIN pg_catalog.pg_namespace source_ns
+              ON source_ns.oid = source_class.relnamespace
+            JOIN pg_catalog.pg_attribute source_attribute
+              ON source_attribute.attrelid = source_class.oid
+             AND source_attribute.attnum = dep.refobjsubid
+            WHERE source_ns.nspname = %s
+              AND source_class.relname = %s
+              AND source_attribute.attname = %s
+              AND dep.refobjsubid > 0
+              AND dependent_class.relkind IN ('v', 'm')
+            ORDER BY
+                dependent_object_type,
+                dependent_schema,
+                dependent_object
+            """,
+            (schema_name, table_name, column_name),
+        )
+
+        return [
+            {
+                "schema": row[0],
+                "object": row[1],
+                "type": row[2],
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def format_dependencies(dependencies):
+    return ", ".join(
+        (
+            f'{dependency["schema"]}.{dependency["object"]} '
+            f'({dependency["type"]})'
+        )
+        for dependency in dependencies
+    )
+
+
+###############################################################################
+# STEP 7 - SILVER TARGET SCHEMA MANAGEMENT
+#
+# This section performs controlled schema evolution.
+#
+# New target table:
+#   Create it from Bronze metadata and add the primary key.
+#
+# New Bronze column:
+#   Add the column to Silver automatically.
+#
+# Bronze column removed:
+#   Leave the Silver column unchanged to preserve historical data.
+#
+# Safe datatype widening:
+#   Check dependencies, then alter Silver automatically.
+#
+# Risky datatype change:
+#   Block the complete table and send it to developer review.
 ###############################################################################
 
 def create_target_table(
@@ -838,7 +1048,86 @@ def synchronize_target_schema(
             "reason": control_message,
         }
 
-    # Add new columns only after confirming there are no risky changes.
+    # Check dependent views and materialized views before safe ALTERs.
+    dependency_blocks = []
+
+    for change in safe_changes:
+        dependencies = get_column_dependencies(
+            silver_conn,
+            TARGET_SCHEMA,
+            target_table,
+            change["column_name"],
+        )
+
+        if dependencies:
+            dependency_blocks.append(
+                {
+                    **change,
+                    "dependencies": dependencies,
+                }
+            )
+
+    if dependency_blocks:
+        dependency_messages = []
+
+        for change in dependency_blocks:
+            dependency_text = format_dependencies(change["dependencies"])
+
+            reason = (
+                "Datatype change is classified as safe, but dependent database "
+                "objects prevent ALTER COLUMN TYPE. "
+                f'Column={change["column_name"]}, '
+                f'Bronze datatype={change["source_type"]}, '
+                f'Silver datatype={change["target_type"]}, '
+                f'Dependent objects={dependency_text}. '
+                "Developer must review and recreate or update the dependent "
+                "objects before rerunning this table."
+            )
+
+            dependency_messages.append(
+                (
+                    f'{change["column_name"]}: '
+                    f'Bronze={change["source_type"]}, '
+                    f'Silver={change["target_type"]}, '
+                    f'Dependencies={dependency_text}'
+                )
+            )
+
+            log_schema_review(
+                silver_conn,
+                source_table,
+                target_table,
+                change["column_name"],
+                change["source_type"],
+                change["target_type"],
+                "DEPENDENT_OBJECT_REVIEW_REQUIRED",
+                reason,
+            )
+
+            log_error(
+                silver_conn,
+                source_table,
+                target_table,
+                "COLUMN_DEPENDENCY_CHECK",
+                reason,
+                severity="CRITICAL",
+                column_name=change["column_name"],
+                source_datatype=change["source_type"],
+                target_datatype=change["target_type"],
+            )
+
+        return {
+            "blocked": True,
+            "review_count": len(dependency_blocks),
+            "reason": (
+                f"{len(dependency_blocks)} datatype change(s) are blocked by "
+                "dependent database objects. Affected columns: "
+                + "; ".join(dependency_messages)
+                + ". The complete table load was blocked."
+            ),
+        }
+
+    # Add new columns and apply safe changes only after all validation passes.
     try:
         with silver_conn.cursor() as cur:
             for column in new_columns:
@@ -876,8 +1165,18 @@ def synchronize_target_schema(
     except Exception as exc:
         silver_conn.rollback()
 
+        affected_columns = ", ".join(
+            (
+                f'{change["column_name"]} '
+                f'({change["target_type"]} -> {change["source_type"]})'
+            )
+            for change in safe_changes
+        )
+
         reason = (
             "An approved safe schema change failed. "
+            f"Affected columns: {affected_columns or 'unknown'}. "
+            f"PostgreSQL error: {exc}. "
             "The complete table load was blocked."
         )
 
@@ -886,14 +1185,14 @@ def synchronize_target_schema(
             source_table,
             target_table,
             "APPLY_SCHEMA_CHANGE",
-            str(exc),
+            reason,
             severity="CRITICAL",
             error_detail=traceback.format_exc(),
         )
 
         return {
             "blocked": True,
-            "review_count": 1,
+            "review_count": max(len(safe_changes), 1),
             "reason": reason,
         }
 
@@ -905,7 +1204,23 @@ def synchronize_target_schema(
 
 
 ###############################################################################
-# TEMP TABLE, COPY, AND MERGE
+# STEP 8 - TEMP TABLE, BULK COPY AND MERGE
+#
+# A PostgreSQL session TEMP table is created for the current table.
+#
+# Data transfer:
+#   Bronze COPY TO STDOUT
+#       -> temporary disk-backed transfer file
+#       -> Silver COPY FROM STDIN into the TEMP table
+#
+# Merge:
+#   INSERT INTO target
+#   SELECT FROM temp
+#   ON CONFLICT(primary key)
+#   DO UPDATE
+#
+# The TEMP table is explicitly dropped after processing and would also disappear
+# automatically when the Silver connection closes.
 ###############################################################################
 
 def create_temp_table(
@@ -1082,7 +1397,24 @@ def drop_temp_table(silver_conn, temp_table):
 
 
 ###############################################################################
-# TABLE PROCESSOR
+# STEP 9 - PROCESS ONE TABLE
+#
+# For each table, the framework performs the following sequence:
+#
+#   1. Read source columns.
+#   2. Determine the primary key.
+#   3. Count Bronze rows.
+#   4. Compare and synchronize the Silver schema.
+#   5. Block the table if any schema review is required.
+#   6. Create the TEMP table.
+#   7. COPY Bronze data to the TEMP table.
+#   8. Merge TEMP data into Silver.
+#   9. Count Silver rows.
+#  10. Drop the TEMP table.
+#  11. Write the final control-table record.
+#
+# Any failure is isolated to the current table. The framework then continues
+# with the remaining CLM tables.
 ###############################################################################
 
 def process_table(
@@ -1299,7 +1631,15 @@ def process_table(
 
 
 ###############################################################################
-# ENTRY POINT
+# STEP 10 - FRAMEWORK ENTRY POINT
+#
+# The main function:
+#   - Opens Bronze and Silver connections
+#   - Creates framework control tables
+#   - Discovers all CLM tables
+#   - Applies optional metadata configuration
+#   - Processes tables one by one
+#   - Closes all database connections
 ###############################################################################
 
 def main():
