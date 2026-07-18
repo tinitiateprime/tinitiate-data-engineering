@@ -1,6 +1,6 @@
 ###############################################################################
 #
-# SINGLE-SCHEMA BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
+# PARAMETERIZED BRONZE-TO-SILVER METADATA-DRIVEN ETL FRAMEWORK
 #
 # Technology:
 #   AWS Glue Python Shell / Spark Job runtime
@@ -9,8 +9,8 @@
 #   PostgreSQL
 #
 # Purpose:
-#   This framework loads every enabled table from one configured Bronze PostgreSQL schema
-#   into one configured Silver PostgreSQL schema using one reusable script.
+#   This framework loads every enabled table from a parameterized Bronze PostgreSQL schema
+#   into a parameterized Silver PostgreSQL schema using one reusable script.
 #
 # Main capabilities:
 #   1. Discover all CLM source tables automatically.
@@ -34,12 +34,13 @@
 #   - Never automatically apply risky or narrowing datatype changes.
 #   - Never alter a datatype while dependent database objects exist.
 #   - Always record a final control-table entry for every attempted table.
-#   - Tables without a reliable key must use FULL_REFRESH or APPEND.
+#   - AUTO selects UPSERT for keyed tables and FULL_REFRESH for no-key tables.
 #
 ###############################################################################
 
 import os
 import re
+import sys
 import uuid
 import tempfile
 import traceback
@@ -50,6 +51,38 @@ from psycopg2 import sql
 
 
 ###############################################################################
+# AWS GLUE JOB PARAMETERS
+#
+# Required:
+#   --BRONZE_USERNAME
+#   --BRONZE_PASSWORD
+#   --SILVER_USERNAME
+#   --SILVER_PASSWORD
+#
+# Connection parameters:
+#   --BRONZE_HOST
+#   --BRONZE_PORT
+#   --BRONZE_DB
+#   --SILVER_HOST
+#   --SILVER_PORT
+#   --SILVER_DB
+#
+# Schema parameters:
+#   --SOURCE_SCHEMA
+#   --TARGET_SCHEMA
+#   --CONTROL_SCHEMA
+#
+# Processing parameters:
+#   --DEFAULT_LOAD_STRATEGY AUTO
+#   --INCLUDE_TABLES table1,table2
+#   --EXCLUDE_TABLES table3,table4
+#
+# AUTO strategy:
+#   Table has PK/override  -> UPSERT
+#   Table has no PK        -> FULL_REFRESH
+###############################################################################
+
+###############################################################################
 # STEP 0 - FRAMEWORK CONFIGURATION
 #
 # This section defines:
@@ -58,47 +91,140 @@ from psycopg2 import sql
 #   - Job name and run identifier
 #   - Optional include/exclude table lists for the configured schema
 #
-# Credentials should ideally come from AWS Secrets Manager. Environment
-# variables are used here so that passwords do not need to be hardcoded.
+# Credentials are parameterized. They may be supplied as AWS Glue job
+# parameters or environment variables, so usernames/passwords are never
+# hardcoded in this script. AWS Secrets Manager remains the recommended
+# production source for passwords.
 ###############################################################################
 
-# Bronze PostgreSQL
-BRONZE_HOST = os.getenv(
+def get_runtime_parameter(
+    parameter_name,
+    default=None,
+    required=False,
+):
+    """
+    Read a parameter from either:
+
+      1. AWS Glue / command-line arguments:
+           --BRONZE_USERNAME value
+           --BRONZE_USERNAME=value
+
+      2. Environment variables:
+           BRONZE_USERNAME=value
+
+      3. The supplied default value.
+
+    Glue examples:
+      --BRONZE_USERNAME bronze_service_user
+      --BRONZE_PASSWORD ********
+      --SILVER_USERNAME silver_service_user
+      --SILVER_PASSWORD ********
+    """
+    normalized_name = parameter_name.strip().upper()
+    cli_name = f"--{normalized_name}"
+
+    # Support: --PARAMETER=value
+    for argument in sys.argv[1:]:
+        if argument.startswith(cli_name + "="):
+            value = argument.split("=", 1)[1].strip()
+            if value:
+                return value
+
+    # Support: --PARAMETER value
+    for index, argument in enumerate(sys.argv[1:], start=1):
+        if argument == cli_name:
+            if index + 1 >= len(sys.argv):
+                raise ValueError(
+                    f"Missing value after command-line parameter {cli_name}"
+                )
+
+            value = sys.argv[index + 1].strip()
+
+            if value.startswith("--"):
+                raise ValueError(
+                    f"Missing value after command-line parameter {cli_name}"
+                )
+
+            if value:
+                return value
+
+    environment_value = os.getenv(normalized_name)
+
+    if environment_value is not None and environment_value.strip():
+        return environment_value.strip()
+
+    if default is not None:
+        return default
+
+    if required:
+        raise ValueError(
+            f"Required parameter {normalized_name} was not supplied. "
+            f"Pass {cli_name} in the Glue job parameters or define the "
+            f"{normalized_name} environment variable."
+        )
+
+    return None
+
+
+def get_required_secret_parameter(parameter_name):
+    """
+    Retrieve a required credential without printing or logging its value.
+    """
+    return get_runtime_parameter(
+        parameter_name,
+        required=True,
+    )
+
+
+# Bronze PostgreSQL connection parameters
+BRONZE_HOST = get_runtime_parameter(
     "BRONZE_HOST",
-    "gsapdi-pg-stg.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
+    default="gsapdi-pg-stg.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
 )
-BRONZE_PORT = int(os.getenv("BRONZE_PORT", "5432"))
-BRONZE_DB = os.getenv("BRONZE_DB", "gsapdi")
-BRONZE_USER = os.getenv("BRONZE_USERNAME", "<BRONZE_USERNAME>")
-BRONZE_PASSWORD = os.getenv("BRONZE_PASSWORD", "<BRONZE_PASSWORD>")
+BRONZE_PORT = int(get_runtime_parameter("BRONZE_PORT", default="5432"))
+BRONZE_DB = get_runtime_parameter("BRONZE_DB", default="gsapdi")
+BRONZE_USER = get_required_secret_parameter("BRONZE_USERNAME")
+BRONZE_PASSWORD = get_required_secret_parameter("BRONZE_PASSWORD")
 
-# Silver PostgreSQL
-SILVER_HOST = os.getenv(
+# Silver PostgreSQL connection parameters
+SILVER_HOST = get_runtime_parameter(
     "SILVER_HOST",
-    "gsapdi-pg-mt-dm-dev.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
+    default="gsapdi-pg-mt-dm-dev.c8jnpcht8n8j.us-gov-west-1.rds.amazonaws.com",
 )
-SILVER_PORT = int(os.getenv("SILVER_PORT", "5432"))
-SILVER_DB = os.getenv("SILVER_DB", "mtdm")
-SILVER_USER = os.getenv("SILVER_USERNAME", "<SILVER_USERNAME>")
-SILVER_PASSWORD = os.getenv("SILVER_PASSWORD", "<SILVER_PASSWORD>")
+SILVER_PORT = int(get_runtime_parameter("SILVER_PORT", default="5432"))
+SILVER_DB = get_runtime_parameter("SILVER_DB", default="mtdm")
+SILVER_USER = get_required_secret_parameter("SILVER_USERNAME")
+SILVER_PASSWORD = get_required_secret_parameter("SILVER_PASSWORD")
 
-# Framework settings
-SOURCE_SCHEMA = os.getenv("SOURCE_SCHEMA", "CLM")
-TARGET_SCHEMA = os.getenv("TARGET_SCHEMA", "CLM")
-CONTROL_SCHEMA = os.getenv("CONTROL_SCHEMA", "etl_control")
-JOB_NAME = os.getenv("JOB_NAME", "clm_bronze_to_silver_framework")
+# Schema and framework parameters
+SOURCE_SCHEMA = get_runtime_parameter("SOURCE_SCHEMA", default="CLM")
+TARGET_SCHEMA = get_runtime_parameter("TARGET_SCHEMA", default=SOURCE_SCHEMA)
+CONTROL_SCHEMA = get_runtime_parameter("CONTROL_SCHEMA", default="etl_control")
+JOB_NAME = get_runtime_parameter(
+    "JOB_NAME",
+    default="postgres_bronze_to_silver_framework",
+)
+
+# AUTO means:
+#   - Use UPSERT when a real/overridden key exists.
+#   - Use FULL_REFRESH when no reliable key exists.
+DEFAULT_LOAD_STRATEGY = get_runtime_parameter(
+    "DEFAULT_LOAD_STRATEGY",
+    default="AUTO",
+).strip().upper()
+
 RUN_ID = uuid.uuid4().hex
 
 # Optional comma-separated controls.
 # Empty INCLUDE_TABLES means discover all base tables under SOURCE_SCHEMA.
 INCLUDE_TABLES = {
     item.strip()
-    for item in os.getenv("INCLUDE_TABLES", "").split(",")
+    for item in get_runtime_parameter("INCLUDE_TABLES", default="").split(",")
     if item.strip()
 }
 EXCLUDE_TABLES = {
     item.strip()
-    for item in os.getenv("EXCLUDE_TABLES", "").split(",")
+    for item in get_runtime_parameter("EXCLUDE_TABLES", default="").split(",")
     if item.strip()
 }
 
@@ -178,7 +304,7 @@ def create_framework_tables(silver_conn):
                     target_table           varchar(255) NOT NULL,
                     enabled                boolean NOT NULL DEFAULT true,
                     primary_key_override   text,
-                    load_strategy          varchar(30) NOT NULL DEFAULT 'UPSERT',
+                    load_strategy          varchar(30) NOT NULL DEFAULT 'AUTO',
                     load_order             integer NOT NULL DEFAULT 100,
                     created_datetime       timestamptz NOT NULL
                                            DEFAULT CURRENT_TIMESTAMP,
@@ -197,7 +323,7 @@ def create_framework_tables(silver_conn):
                 """
                 ALTER TABLE {}.etl_table_config
                 ADD COLUMN IF NOT EXISTS load_strategy varchar(30)
-                NOT NULL DEFAULT 'UPSERT'
+                NOT NULL DEFAULT 'AUTO'
                 """
             ).format(sql.Identifier(CONTROL_SCHEMA))
         )
@@ -615,7 +741,7 @@ def build_table_jobs(bronze_conn, silver_conn):
                 "load_strategy": (
                     str(config["load_strategy"]).strip().upper()
                     if config and config["load_strategy"]
-                    else "UPSERT"
+                    else DEFAULT_LOAD_STRATEGY
                 ),
                 "table_load_order": (
                     config["load_order"]
@@ -1883,7 +2009,7 @@ def process_table(
     source_table,
     target_table,
     primary_key_override=None,
-    load_strategy="UPSERT",
+    load_strategy="AUTO",
 ):
     start_datetime = datetime.now(timezone.utc)
 
@@ -1903,13 +2029,20 @@ def process_table(
             f"-> {TARGET_SCHEMA}.{target_table}"
         )
 
-        load_strategy = str(load_strategy or "UPSERT").strip().upper()
+        requested_load_strategy = str(
+            load_strategy or DEFAULT_LOAD_STRATEGY
+        ).strip().upper()
 
-        if load_strategy not in {"UPSERT", "FULL_REFRESH", "APPEND"}:
+        if requested_load_strategy not in {
+            "AUTO",
+            "UPSERT",
+            "FULL_REFRESH",
+            "APPEND",
+        }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "UPSERT, FULL_REFRESH, APPEND. "
-                f"Received={load_strategy}"
+                "AUTO, UPSERT, FULL_REFRESH, APPEND. "
+                f"Received={requested_load_strategy}"
             )
 
         source_columns = get_table_columns(
@@ -1934,17 +2067,28 @@ def process_table(
                 source_table,
             )
 
+        if requested_load_strategy == "AUTO":
+            load_strategy = "UPSERT" if primary_keys else "FULL_REFRESH"
+        else:
+            load_strategy = requested_load_strategy
+
         if load_strategy == "UPSERT" and not primary_keys:
             raise RuntimeError(
                 "UPSERT requires a source primary key or a reliable "
-                "primary_key_override in etl_control.etl_table_config. "
-                "For a table without a reliable key, configure "
-                "load_strategy='FULL_REFRESH'."
+                f"primary_key_override in {CONTROL_SCHEMA}.etl_table_config. "
+                "Use load_strategy='AUTO' or 'FULL_REFRESH' for tables "
+                "without a reliable key."
             )
 
         if load_strategy != "UPSERT":
             # FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
+
+        print(
+            f"[{source_table}] requested_strategy={requested_load_strategy}, "
+            f"resolved_strategy={load_strategy}, "
+            f"primary_keys={primary_keys or 'NONE'}"
+        )
 
         source_column_names = {
             column["name"] for column in source_columns
@@ -2154,6 +2298,21 @@ def main():
     silver_conn = None
 
     try:
+        print("=" * 80)
+        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK")
+        print(f"Run ID             : {RUN_ID}")
+        print(f"Job name           : {JOB_NAME}")
+        print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
+        print(f"Bronze login       : {BRONZE_USER}")
+        print(f"Silver host/database: {SILVER_HOST}/{SILVER_DB}")
+        print(f"Silver login       : {SILVER_USER}")
+        print(f"Source schema      : {SOURCE_SCHEMA}")
+        print(f"Target schema      : {TARGET_SCHEMA}")
+        print(f"Control schema     : {CONTROL_SCHEMA}")
+        print(f"Default strategy   : {DEFAULT_LOAD_STRATEGY}")
+        print("Passwords are parameterized and are not logged.")
+        print("=" * 80)
+
         bronze_conn = connect_bronze()
         silver_conn = connect_silver()
 
