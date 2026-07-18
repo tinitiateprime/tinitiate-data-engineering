@@ -22,7 +22,7 @@
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
 #   9. Use PostgreSQL COPY for efficient bulk data transfer.
-#  10. Use INSERT ... ON CONFLICT ... DO UPDATE for upsert processing.
+#  10. Support UPSERT, FULL_REFRESH and APPEND load strategies.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
 #  13. Store datatype issues in the schema-review table.
@@ -34,6 +34,7 @@
 #   - Never automatically apply risky or narrowing datatype changes.
 #   - Never alter a datatype while dependent database objects exist.
 #   - Always record a final control-table entry for every attempted table.
+#   - Tables without a reliable key must use FULL_REFRESH or APPEND.
 #
 ###############################################################################
 
@@ -177,6 +178,7 @@ def create_framework_tables(silver_conn):
                     target_table           varchar(255) NOT NULL,
                     enabled                boolean NOT NULL DEFAULT true,
                     primary_key_override   text,
+                    load_strategy          varchar(30) NOT NULL DEFAULT 'UPSERT',
                     load_order             integer NOT NULL DEFAULT 100,
                     created_datetime       timestamptz NOT NULL
                                            DEFAULT CURRENT_TIMESTAMP,
@@ -184,6 +186,18 @@ def create_framework_tables(silver_conn):
                                            DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (source_schema, source_table)
                 )
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+
+        # Add load_strategy to existing configuration tables created by
+        # an earlier version of the framework.
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.etl_table_config
+                ADD COLUMN IF NOT EXISTS load_strategy varchar(30)
+                NOT NULL DEFAULT 'UPSERT'
                 """
             ).format(sql.Identifier(CONTROL_SCHEMA))
         )
@@ -527,6 +541,7 @@ def get_table_config(
                     target_table,
                     enabled,
                     primary_key_override,
+                    load_strategy,
                     load_order
                 FROM {}.etl_table_config
                 WHERE source_schema = %s
@@ -541,7 +556,8 @@ def get_table_config(
                 "target_table": row[1],
                 "enabled": row[2],
                 "primary_key_override": row[3],
-                "load_order": row[4],
+                "load_strategy": row[4],
+                "load_order": row[5],
             }
             for row in cur.fetchall()
         }
@@ -595,6 +611,11 @@ def build_table_jobs(bronze_conn, silver_conn):
                     config["primary_key_override"]
                     if config
                     else None
+                ),
+                "load_strategy": (
+                    str(config["load_strategy"]).strip().upper()
+                    if config and config["load_strategy"]
+                    else "UPSERT"
                 ),
                 "table_load_order": (
                     config["load_order"]
@@ -1529,6 +1550,245 @@ def copy_bronze_to_temp(
             )
 
 
+
+def validate_unique_key(
+    bronze_conn,
+    source_table,
+    primary_keys,
+):
+    """
+    Validate a configured primary-key override before using it for UPSERT.
+
+    The key is considered valid only when:
+      - none of the key columns contain NULL
+      - no duplicate key combinations exist
+    """
+    if not primary_keys:
+        return
+
+    null_predicate = sql.SQL(" OR ").join(
+        sql.SQL("{} IS NULL").format(sql.Identifier(column))
+        for column in primary_keys
+    )
+
+    duplicate_columns = sql.SQL(", ").join(
+        sql.Identifier(column) for column in primary_keys
+    )
+
+    with bronze_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT COUNT(*)
+                FROM {}.{}
+                WHERE {}
+                """
+            ).format(
+                sql.Identifier(SOURCE_SCHEMA),
+                sql.Identifier(source_table),
+                null_predicate,
+            )
+        )
+        null_count = cur.fetchone()[0]
+
+        if null_count > 0:
+            raise RuntimeError(
+                "Configured UPSERT key contains NULL values. "
+                f"Key columns={primary_keys}, null_rows={null_count}."
+            )
+
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT COUNT(*)
+                FROM
+                (
+                    SELECT {}
+                    FROM {}.{}
+                    GROUP BY {}
+                    HAVING COUNT(*) > 1
+                ) duplicate_keys
+                """
+            ).format(
+                duplicate_columns,
+                sql.Identifier(SOURCE_SCHEMA),
+                sql.Identifier(source_table),
+                duplicate_columns,
+            )
+        )
+        duplicate_group_count = cur.fetchone()[0]
+
+        if duplicate_group_count > 0:
+            raise RuntimeError(
+                "Configured UPSERT key is not unique in Bronze. "
+                f"Key columns={primary_keys}, "
+                f"duplicate_key_groups={duplicate_group_count}."
+            )
+
+
+def ensure_target_unique_constraint(
+    silver_conn,
+    target_table,
+    primary_keys,
+):
+    """
+    ON CONFLICT requires a matching PRIMARY KEY or UNIQUE constraint.
+
+    For existing Silver tables, create a UNIQUE constraint when the configured
+    business key is valid but is not already enforced in Silver.
+    """
+    if not primary_keys:
+        return
+
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS
+            (
+                SELECT 1
+                FROM pg_catalog.pg_index i
+                JOIN pg_catalog.pg_class c
+                  ON c.oid = i.indrelid
+                JOIN pg_catalog.pg_namespace n
+                  ON n.oid = c.relnamespace
+                WHERE n.nspname = %s
+                  AND c.relname = %s
+                  AND i.indisunique
+                  AND
+                  (
+                      SELECT array_agg(a.attname ORDER BY keys.ord)
+                      FROM unnest(i.indkey) WITH ORDINALITY
+                           AS keys(attnum, ord)
+                      JOIN pg_catalog.pg_attribute a
+                        ON a.attrelid = c.oid
+                       AND a.attnum = keys.attnum
+                  ) = %s::text[]
+            )
+            """,
+            (
+                TARGET_SCHEMA,
+                target_table,
+                primary_keys,
+            ),
+        )
+
+        constraint_exists = cur.fetchone()[0]
+
+        if constraint_exists:
+            return
+
+        constraint_name = (
+            f"uq_{target_table}_{'_'.join(primary_keys)}"
+        )[:63]
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.{}
+                ADD CONSTRAINT {} UNIQUE ({})
+                """
+            ).format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+                sql.Identifier(constraint_name),
+                sql.SQL(", ").join(
+                    sql.Identifier(column) for column in primary_keys
+                ),
+            )
+        )
+
+    silver_conn.commit()
+
+
+def full_refresh_temp_to_target(
+    silver_conn,
+    temp_table,
+    target_table,
+    source_columns,
+):
+    """
+    Replace the complete Silver table contents when no reliable key exists.
+
+    TRUNCATE and INSERT run in one transaction. If INSERT fails, PostgreSQL
+    rolls back the TRUNCATE as well.
+    """
+    column_names = [column["name"] for column in source_columns]
+
+    column_list = sql.SQL(", ").join(
+        sql.Identifier(column) for column in column_names
+    )
+
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("TRUNCATE TABLE {}.{}").format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+            )
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.{} ({})
+                SELECT {}
+                FROM {}
+                """
+            ).format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+                column_list,
+                column_list,
+                sql.Identifier(temp_table),
+            )
+        )
+
+        affected_rows = cur.rowcount
+
+    silver_conn.commit()
+    return affected_rows
+
+
+def append_temp_to_target(
+    silver_conn,
+    temp_table,
+    target_table,
+    source_columns,
+):
+    """
+    Append every source row to Silver.
+
+    Use this only for true append-only/event tables. Re-running the same source
+    data will create duplicates.
+    """
+    column_names = [column["name"] for column in source_columns]
+
+    column_list = sql.SQL(", ").join(
+        sql.Identifier(column) for column in column_names
+    )
+
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.{} ({})
+                SELECT {}
+                FROM {}
+                """
+            ).format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+                column_list,
+                column_list,
+                sql.Identifier(temp_table),
+            )
+        )
+
+        affected_rows = cur.rowcount
+
+    silver_conn.commit()
+    return affected_rows
+
+
 def merge_temp_to_target(
     silver_conn,
     temp_table,
@@ -1623,6 +1883,7 @@ def process_table(
     source_table,
     target_table,
     primary_key_override=None,
+    load_strategy="UPSERT",
 ):
     start_datetime = datetime.now(timezone.utc)
 
@@ -1641,6 +1902,15 @@ def process_table(
             f"Processing {SOURCE_SCHEMA}.{source_table} "
             f"-> {TARGET_SCHEMA}.{target_table}"
         )
+
+        load_strategy = str(load_strategy or "UPSERT").strip().upper()
+
+        if load_strategy not in {"UPSERT", "FULL_REFRESH", "APPEND"}:
+            raise RuntimeError(
+                "Unsupported load_strategy. Expected one of: "
+                "UPSERT, FULL_REFRESH, APPEND. "
+                f"Received={load_strategy}"
+            )
 
         source_columns = get_table_columns(
             bronze_conn,
@@ -1664,11 +1934,17 @@ def process_table(
                 source_table,
             )
 
-        if not primary_keys:
+        if load_strategy == "UPSERT" and not primary_keys:
             raise RuntimeError(
-                "No primary key was found. Add primary_key_override "
-                "to etl_control.etl_table_config."
+                "UPSERT requires a source primary key or a reliable "
+                "primary_key_override in etl_control.etl_table_config. "
+                "For a table without a reliable key, configure "
+                "load_strategy='FULL_REFRESH'."
             )
+
+        if load_strategy != "UPSERT":
+            # FULL_REFRESH and APPEND do not require a key.
+            primary_keys = []
 
         source_column_names = {
             column["name"] for column in source_columns
@@ -1683,6 +1959,13 @@ def process_table(
             raise RuntimeError(
                 "Primary-key columns are missing from Bronze: "
                 + ", ".join(missing_primary_keys)
+            )
+
+        if load_strategy == "UPSERT":
+            validate_unique_key(
+                bronze_conn,
+                source_table,
+                primary_keys,
             )
 
         bronze_count = get_row_count(
@@ -1721,6 +2004,13 @@ def process_table(
             )
             return
 
+        if load_strategy == "UPSERT":
+            ensure_target_unique_constraint(
+                silver_conn,
+                target_table,
+                primary_keys,
+            )
+
         temp_table = create_temp_table(
             silver_conn,
             source_table,
@@ -1736,13 +2026,28 @@ def process_table(
             source_columns,
         )
 
-        rows_processed = merge_temp_to_target(
-            silver_conn,
-            temp_table,
-            target_table,
-            source_columns,
-            primary_keys,
-        )
+        if load_strategy == "UPSERT":
+            rows_processed = merge_temp_to_target(
+                silver_conn,
+                temp_table,
+                target_table,
+                source_columns,
+                primary_keys,
+            )
+        elif load_strategy == "FULL_REFRESH":
+            rows_processed = full_refresh_temp_to_target(
+                silver_conn,
+                temp_table,
+                target_table,
+                source_columns,
+            )
+        else:
+            rows_processed = append_temp_to_target(
+                silver_conn,
+                temp_table,
+                target_table,
+                source_columns,
+            )
 
         silver_count = get_row_count(
             silver_conn,
@@ -1751,7 +2056,9 @@ def process_table(
         )
 
         status = "SUCCESS"
-        message = "Table loaded successfully."
+        message = (
+            f"Table loaded successfully using {load_strategy} strategy."
+        )
 
     except Exception as exc:
         silver_conn.rollback()
@@ -1873,6 +2180,7 @@ def main():
                 table_job["source_table"],
                 table_job["target_table"],
                 table_job["primary_key_override"],
+                table_job["load_strategy"],
             )
 
         print(f"Framework run {RUN_ID} completed.")
