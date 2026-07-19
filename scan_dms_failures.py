@@ -1760,6 +1760,10 @@ def ensure_target_unique_constraint(
     """
     ON CONFLICT requires a matching PRIMARY KEY or UNIQUE constraint.
 
+    The unique-key comparison uses a comma-separated text value instead of
+    PostgreSQL arrays. This avoids name[] versus text[] datatype errors while
+    preserving the exact order of composite-key columns.
+
     For existing Silver tables, create a UNIQUE constraint when the configured
     business key is valid but is not already enforced in Silver.
     """
@@ -1782,19 +1786,22 @@ def ensure_target_unique_constraint(
                   AND i.indisunique
                   AND
                   (
-                      SELECT array_agg(a.attname ORDER BY keys.ord)
+                      SELECT string_agg(
+                          a.attname::text,
+                          ',' ORDER BY keys.ord
+                      )
                       FROM unnest(i.indkey) WITH ORDINALITY
                            AS keys(attnum, ord)
                       JOIN pg_catalog.pg_attribute a
                         ON a.attrelid = c.oid
                        AND a.attnum = keys.attnum
-                  ) = %s::text[]
+                  ) = %s
             )
             """,
             (
                 TARGET_SCHEMA,
                 target_table,
-                primary_keys,
+                ",".join(primary_keys),
             ),
         )
 
@@ -2299,7 +2306,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK")
+        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK - VERSION 3 NO-ARRAY")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
