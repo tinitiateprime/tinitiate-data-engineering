@@ -74,6 +74,13 @@ from psycopg2 import sql
 #
 # Processing parameters:
 #   --DEFAULT_LOAD_STRATEGY AUTO
+#   --ACTIVE_FLAG_COLUMN bronze_record_active_flg
+#   --ACTIVE_FLAG_Y Y
+#   --ACTIVE_FLAG_N N
+#   --ROW_HASH_COLUMN bronze_row_hash
+#   --BUCKET_COUNT 16
+#   --BUCKET_ROW_THRESHOLD 1000000
+#   --VALIDATE_KEY_OVERRIDE false
 #   --INCLUDE_TABLES table1,table2
 #   --EXCLUDE_TABLES table3,table4
 #
@@ -214,6 +221,42 @@ DEFAULT_LOAD_STRATEGY = get_runtime_parameter(
     "DEFAULT_LOAD_STRATEGY",
     default="AUTO",
 ).strip().upper()
+
+ACTIVE_FLAG_COLUMN = get_runtime_parameter(
+    "ACTIVE_FLAG_COLUMN",
+    default="bronze_record_active_flg",
+).strip()
+ACTIVE_FLAG_Y = get_runtime_parameter("ACTIVE_FLAG_Y", default="Y")
+ACTIVE_FLAG_N = get_runtime_parameter("ACTIVE_FLAG_N", default="N")
+
+ROW_HASH_COLUMN = get_runtime_parameter(
+    "ROW_HASH_COLUMN",
+    default="bronze_row_hash",
+).strip()
+
+BUCKET_COUNT = int(get_runtime_parameter("BUCKET_COUNT", default="16"))
+
+# Tables at or below this Bronze row count run once without buckets.
+# Larger keyed tables automatically loop from bucket 0 through BUCKET_COUNT - 1.
+BUCKET_ROW_THRESHOLD = int(
+    get_runtime_parameter(
+        "BUCKET_ROW_THRESHOLD",
+        default="1000000",
+    )
+)
+
+if BUCKET_COUNT < 1:
+    raise ValueError("BUCKET_COUNT must be at least 1.")
+
+if BUCKET_ROW_THRESHOLD < 0:
+    raise ValueError("BUCKET_ROW_THRESHOLD cannot be negative.")
+
+VALIDATE_KEY_OVERRIDE = (
+    get_runtime_parameter("VALIDATE_KEY_OVERRIDE", default="false")
+    .strip()
+    .lower()
+    in {"1", "true", "t", "yes", "y"}
+)
 
 RUN_ID = uuid.uuid4().hex
 
@@ -1213,6 +1256,13 @@ def create_target_table(
 
         column_definitions.append(definition)
 
+    column_definitions.append(
+        sql.SQL("{} varchar(1) NOT NULL DEFAULT {}").format(
+            sql.Identifier(ACTIVE_FLAG_COLUMN),
+            sql.Literal(ACTIVE_FLAG_Y),
+        )
+    )
+
     if primary_keys:
         column_definitions.append(
             sql.SQL("PRIMARY KEY ({})").format(
@@ -1273,6 +1323,54 @@ def synchronize_target_schema(
         target_table,
     )
     target_map = {column["name"]: column for column in target_columns}
+
+    if ACTIVE_FLAG_COLUMN not in target_map:
+        with silver_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD COLUMN {} varchar(1)
+                    NOT NULL DEFAULT {}
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    sql.Identifier(ACTIVE_FLAG_COLUMN),
+                    sql.Literal(ACTIVE_FLAG_Y),
+                )
+            )
+        silver_conn.commit()
+
+        target_columns = get_table_columns(
+            silver_conn,
+            TARGET_SCHEMA,
+            target_table,
+        )
+        target_map = {column["name"]: column for column in target_columns}
+
+    if ROW_HASH_COLUMN not in target_map:
+        with silver_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD COLUMN {} char(32)
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    sql.Identifier(ROW_HASH_COLUMN),
+                )
+            )
+        silver_conn.commit()
+
+        target_columns = get_table_columns(
+            silver_conn,
+            TARGET_SCHEMA,
+            target_table,
+        )
+        target_map = {column["name"]: column for column in target_columns}
 
     risky_changes = []
     safe_changes = []
@@ -1572,6 +1670,51 @@ def synchronize_target_schema(
 # automatically when the Silver connection closes.
 ###############################################################################
 
+def build_bucket_predicate(
+    alias,
+    primary_keys,
+    bucket_count=1,
+    bucket_id=0,
+):
+    """
+    Build a deterministic predicate for one bucket.
+
+    bucket_count=1 processes the complete table.
+    """
+    if bucket_count == 1:
+        return sql.SQL("TRUE")
+
+    if not primary_keys:
+        raise RuntimeError(
+            "Bucket processing requires a primary key or "
+            "primary_key_override."
+        )
+
+    key_text = sql.SQL(", ").join(
+        sql.SQL("COALESCE({}.{}::text, '<NULL>')").format(
+            sql.Identifier(alias),
+            sql.Identifier(key),
+        )
+        for key in primary_keys
+    )
+
+    return sql.SQL(
+        """
+        mod(
+            (
+                hashtextextended(concat_ws('|', {}), 0)
+                & 9223372036854775807
+            ),
+            {}
+        ) = {}
+        """
+    ).format(
+        key_text,
+        sql.Literal(bucket_count),
+        sql.Literal(bucket_id),
+    )
+
+
 def create_temp_table(
     silver_conn,
     source_table,
@@ -1580,7 +1723,7 @@ def create_temp_table(
 ):
     temp_table = f"tmp_{target_table}_{RUN_ID[:8]}"
 
-    column_list = sql.SQL(", ").join(
+    source_column_list = sql.SQL(", ").join(
         sql.Identifier(column["name"]) for column in source_columns
     )
 
@@ -1589,13 +1732,14 @@ def create_temp_table(
             sql.SQL(
                 """
                 CREATE TEMP TABLE {} AS
-                SELECT {}
+                SELECT {}, {}
                 FROM {}.{}
                 WITH NO DATA
                 """
             ).format(
                 sql.Identifier(temp_table),
-                column_list,
+                source_column_list,
+                sql.Identifier(ROW_HASH_COLUMN),
                 sql.Identifier(TARGET_SCHEMA),
                 sql.Identifier(target_table),
             )
@@ -1610,17 +1754,36 @@ def copy_bronze_to_temp(
     source_table,
     temp_table,
     source_columns,
+    primary_keys,
+    bucket_count=1,
+    bucket_id=0,
 ):
-    column_list = sql.SQL(", ").join(
-        sql.Identifier(column["name"]) for column in source_columns
+    source_select_columns = sql.SQL(", ").join(
+        sql.SQL("src.{}").format(sql.Identifier(column["name"]))
+        for column in source_columns
+    )
+
+    target_columns = sql.SQL(", ").join(
+        [sql.Identifier(column["name"]) for column in source_columns]
+        + [sql.Identifier(ROW_HASH_COLUMN)]
+    )
+
+    bucket_predicate = build_bucket_predicate(
+        "src",
+        primary_keys,
+        bucket_count,
+        bucket_id,
     )
 
     source_copy = sql.SQL(
         """
         COPY
         (
-            SELECT {}
-            FROM {}.{}
+            SELECT
+                {},
+                md5(to_jsonb(src)::text) AS {}
+            FROM {}.{} src
+            WHERE {}
         )
         TO STDOUT
         WITH
@@ -1633,9 +1796,11 @@ def copy_bronze_to_temp(
         )
         """
     ).format(
-        column_list,
+        source_select_columns,
+        sql.Identifier(ROW_HASH_COLUMN),
         sql.Identifier(SOURCE_SCHEMA),
         sql.Identifier(source_table),
+        bucket_predicate,
     )
 
     target_copy = sql.SQL(
@@ -1653,11 +1818,9 @@ def copy_bronze_to_temp(
         """
     ).format(
         sql.Identifier(temp_table),
-        column_list,
+        target_columns,
     )
 
-    # Disk-backed temporary file prevents the entire table being stored
-    # in Python memory.
     with tempfile.TemporaryFile(
         mode="w+",
         encoding="utf-8",
@@ -1676,7 +1839,6 @@ def copy_bronze_to_temp(
                 target_copy.as_string(silver_conn),
                 transfer_file,
             )
-
 
 
 def validate_unique_key(
@@ -1931,21 +2093,23 @@ def initial_insert_temp_to_target(
     target_table,
     source_columns,
 ):
-    """
-    First-time load for a keyed table when the Silver target contains zero rows.
-
-    This uses a plain INSERT without ON CONFLICT, avoiding per-row conflict
-    checks during the initial bulk load.
-    """
     column_names = [column["name"] for column in source_columns]
 
-    column_list = sql.SQL(", ").join(
-        sql.Identifier(column) for column in column_names
+    insert_columns = sql.SQL(", ").join(
+        [sql.Identifier(column) for column in column_names]
+        + [
+            sql.Identifier(ACTIVE_FLAG_COLUMN),
+            sql.Identifier(ROW_HASH_COLUMN),
+        ]
     )
 
     select_columns = sql.SQL(", ").join(
-        sql.SQL("b.{}").format(sql.Identifier(column))
-        for column in column_names
+        [sql.SQL("b.{}").format(sql.Identifier(column))
+         for column in column_names]
+        + [
+            sql.Literal(ACTIVE_FLAG_Y),
+            sql.SQL("b.{}").format(sql.Identifier(ROW_HASH_COLUMN)),
+        ]
     )
 
     with silver_conn.cursor() as cur:
@@ -1959,7 +2123,7 @@ def initial_insert_temp_to_target(
             ).format(
                 sql.Identifier(TARGET_SCHEMA),
                 sql.Identifier(target_table),
-                column_list,
+                insert_columns,
                 select_columns,
                 sql.Identifier(temp_table),
             )
@@ -1970,37 +2134,25 @@ def initial_insert_temp_to_target(
     return affected_rows
 
 
-def insert_missing_temp_to_target(
+def synchronize_temp_to_target_with_flag(
     silver_conn,
     temp_table,
     target_table,
     source_columns,
     primary_keys,
+    bucket_count=1,
+    bucket_id=0,
 ):
-    """
-    Daily insert-only comparison for large keyed tables.
-
-    Only rows whose primary/business key does not already exist in Silver are
-    inserted. Existing Silver rows are not updated.
-
-    This is appropriate when the source table is append-only or when the
-    requirement is specifically to capture missing records.
-    """
     if not primary_keys:
         raise RuntimeError(
-            "INSERT_MISSING requires a primary key or primary_key_override."
+            "HASH_SYNC requires a primary key or primary_key_override."
         )
 
     column_names = [column["name"] for column in source_columns]
-
-    insert_columns = sql.SQL(", ").join(
-        sql.Identifier(column) for column in column_names
-    )
-
-    select_columns = sql.SQL(", ").join(
-        sql.SQL("b.{}").format(sql.Identifier(column))
-        for column in column_names
-    )
+    non_key_columns = [
+        column for column in column_names
+        if column not in primary_keys
+    ]
 
     key_match = sql.SQL(" AND ").join(
         sql.SQL("s.{} = b.{}").format(
@@ -2010,35 +2162,158 @@ def insert_missing_temp_to_target(
         for key in primary_keys
     )
 
-    statement = sql.SQL(
-        """
-        INSERT INTO {}.{} ({})
-        SELECT {}
-        FROM {} b
-        WHERE NOT EXISTS
-        (
-            SELECT 1
-            FROM {}.{} s
-            WHERE {}
-        )
-        """
-    ).format(
-        sql.Identifier(TARGET_SCHEMA),
-        sql.Identifier(target_table),
-        insert_columns,
-        select_columns,
-        sql.Identifier(temp_table),
-        sql.Identifier(TARGET_SCHEMA),
-        sql.Identifier(target_table),
-        key_match,
+    insert_columns = sql.SQL(", ").join(
+        [sql.Identifier(column) for column in column_names]
+        + [
+            sql.Identifier(ACTIVE_FLAG_COLUMN),
+            sql.Identifier(ROW_HASH_COLUMN),
+        ]
     )
 
-    with silver_conn.cursor() as cur:
-        cur.execute(statement)
-        affected_rows = cur.rowcount
+    select_columns = sql.SQL(", ").join(
+        [sql.SQL("b.{}").format(sql.Identifier(column))
+         for column in column_names]
+        + [
+            sql.Literal(ACTIVE_FLAG_Y),
+            sql.SQL("b.{}").format(sql.Identifier(ROW_HASH_COLUMN)),
+        ]
+    )
 
-    silver_conn.commit()
-    return affected_rows
+    set_items = [
+        sql.SQL("{} = b.{}").format(
+            sql.Identifier(column),
+            sql.Identifier(column),
+        )
+        for column in non_key_columns
+    ]
+    set_items.extend(
+        [
+            sql.SQL("{} = {}").format(
+                sql.Identifier(ACTIVE_FLAG_COLUMN),
+                sql.Literal(ACTIVE_FLAG_Y),
+            ),
+            sql.SQL("{} = b.{}").format(
+                sql.Identifier(ROW_HASH_COLUMN),
+                sql.Identifier(ROW_HASH_COLUMN),
+            ),
+        ]
+    )
+    set_clause = sql.SQL(", ").join(set_items)
+
+    target_bucket_predicate = build_bucket_predicate(
+        "s",
+        primary_keys,
+        bucket_count,
+        bucket_id,
+    )
+
+    inserted_rows = 0
+    updated_rows = 0
+    inactive_rows = 0
+
+    try:
+        with silver_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    UPDATE {}.{} s
+                    SET {}
+                    FROM {} b
+                    WHERE {}
+                      AND
+                      (
+                          s.{} IS DISTINCT FROM b.{}
+                          OR s.{} IS DISTINCT FROM {}
+                      )
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    set_clause,
+                    sql.Identifier(temp_table),
+                    key_match,
+                    sql.Identifier(ROW_HASH_COLUMN),
+                    sql.Identifier(ROW_HASH_COLUMN),
+                    sql.Identifier(ACTIVE_FLAG_COLUMN),
+                    sql.Literal(ACTIVE_FLAG_Y),
+                )
+            )
+            updated_rows = cur.rowcount
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {}.{} ({})
+                    SELECT {}
+                    FROM {} b
+                    WHERE NOT EXISTS
+                    (
+                        SELECT 1
+                        FROM {}.{} s
+                        WHERE {}
+                    )
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    insert_columns,
+                    select_columns,
+                    sql.Identifier(temp_table),
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    key_match,
+                )
+            )
+            inserted_rows = cur.rowcount
+
+            reverse_key_match = sql.SQL(" AND ").join(
+                sql.SQL("b.{} = s.{}").format(
+                    sql.Identifier(key),
+                    sql.Identifier(key),
+                )
+                for key in primary_keys
+            )
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    UPDATE {}.{} s
+                    SET {} = {}
+                    WHERE {}
+                      AND s.{} IS DISTINCT FROM {}
+                      AND NOT EXISTS
+                      (
+                          SELECT 1
+                          FROM {} b
+                          WHERE {}
+                      )
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    sql.Identifier(ACTIVE_FLAG_COLUMN),
+                    sql.Literal(ACTIVE_FLAG_N),
+                    target_bucket_predicate,
+                    sql.Identifier(ACTIVE_FLAG_COLUMN),
+                    sql.Literal(ACTIVE_FLAG_N),
+                    sql.Identifier(temp_table),
+                    reverse_key_match,
+                )
+            )
+            inactive_rows = cur.rowcount
+
+        silver_conn.commit()
+
+    except Exception:
+        silver_conn.rollback()
+        raise
+
+    return {
+        "inserted": inserted_rows,
+        "updated_or_reactivated": updated_rows,
+        "marked_inactive": inactive_rows,
+        "rows_processed": inserted_rows + updated_rows + inactive_rows,
+    }
 
 
 def merge_temp_to_target(
@@ -2161,14 +2436,14 @@ def process_table(
 
         if requested_load_strategy not in {
             "AUTO",
-            "INSERT_MISSING",
+            "SYNC_WITH_FLAG",
             "UPSERT",
             "FULL_REFRESH",
             "APPEND",
         }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "AUTO, INSERT_MISSING, UPSERT, FULL_REFRESH, APPEND. "
+                "AUTO, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
                 f"Received={requested_load_strategy}"
             )
 
@@ -2196,14 +2471,14 @@ def process_table(
 
         if requested_load_strategy == "AUTO":
             load_strategy = (
-                "INSERT_MISSING"
+                "SYNC_WITH_FLAG"
                 if primary_keys
                 else "FULL_REFRESH"
             )
         else:
             load_strategy = requested_load_strategy
 
-        if load_strategy in {"UPSERT", "INSERT_MISSING"} and not primary_keys:
+        if load_strategy in {"UPSERT", "SYNC_WITH_FLAG"} and not primary_keys:
             raise RuntimeError(
                 f"{load_strategy} requires a source primary key or a reliable "
                 f"primary_key_override in {CONTROL_SCHEMA}.etl_table_config. "
@@ -2211,7 +2486,7 @@ def process_table(
                 "without a reliable key."
             )
 
-        if load_strategy not in {"UPSERT", "INSERT_MISSING"}:
+        if load_strategy not in {"UPSERT", "SYNC_WITH_FLAG"}:
             # FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
 
@@ -2236,7 +2511,11 @@ def process_table(
                 + ", ".join(missing_primary_keys)
             )
 
-        if load_strategy in {"UPSERT", "INSERT_MISSING"}:
+        if (
+            primary_key_override
+            and VALIDATE_KEY_OVERRIDE
+            and load_strategy in {"UPSERT", "SYNC_WITH_FLAG"}
+        ):
             validate_unique_key(
                 bronze_conn,
                 source_table,
@@ -2279,7 +2558,7 @@ def process_table(
             )
             return
 
-        if load_strategy in {"UPSERT", "INSERT_MISSING"}:
+        if load_strategy in {"UPSERT", "SYNC_WITH_FLAG"}:
             ensure_target_unique_constraint(
                 silver_conn,
                 target_table,
@@ -2292,91 +2571,161 @@ def process_table(
             target_table,
         )
 
-        temp_table = create_temp_table(
-            silver_conn,
-            source_table,
-            target_table,
-            source_columns,
+        # Small tables run once. Large keyed tables automatically process all
+        # buckets in one Glue execution; no daily parameter changes are needed.
+        if (
+            load_strategy in {"SYNC_WITH_FLAG", "UPSERT"}
+            and primary_keys
+            and bronze_count > BUCKET_ROW_THRESHOLD
+            and BUCKET_COUNT > 1
+        ):
+            effective_bucket_count = BUCKET_COUNT
+        else:
+            effective_bucket_count = 1
+
+        print(
+            f"[{source_table}] bronze_count={bronze_count}, "
+            f"bucket_threshold={BUCKET_ROW_THRESHOLD}, "
+            f"effective_bucket_count={effective_bucket_count}"
         )
 
-        copy_bronze_to_temp(
-            bronze_conn,
-            silver_conn,
-            source_table,
-            temp_table,
-            source_columns,
-        )
-
+        total_rows_processed = 0
+        total_inserted = 0
+        total_updated = 0
+        total_inactive = 0
         actual_strategy = load_strategy
 
-        if load_strategy == "INSERT_MISSING":
-            if target_count_before_load == 0:
-                print(
-                    f"[{source_table}] Silver target is empty. "
-                    "Using INITIAL_INSERT."
-                )
-                rows_processed = initial_insert_temp_to_target(
-                    silver_conn,
-                    temp_table,
-                    target_table,
-                    source_columns,
-                )
-                actual_strategy = "INITIAL_INSERT"
-            else:
-                print(
-                    f"[{source_table}] Silver target contains "
-                    f"{target_count_before_load} rows. "
-                    "Using INSERT_MISSING."
-                )
-                rows_processed = insert_missing_temp_to_target(
-                    silver_conn,
-                    temp_table,
-                    target_table,
-                    source_columns,
-                    primary_keys,
-                )
-                actual_strategy = "INSERT_MISSING"
+        for current_bucket_id in range(effective_bucket_count):
+            print(
+                f"[{source_table}] Processing bucket "
+                f"{current_bucket_id + 1}/{effective_bucket_count}"
+            )
 
-        elif load_strategy == "UPSERT":
-            if target_count_before_load == 0:
-                print(
-                    f"[{source_table}] Silver target is empty. "
-                    "Using INITIAL_INSERT instead of UPSERT."
-                )
-                rows_processed = initial_insert_temp_to_target(
-                    silver_conn,
-                    temp_table,
-                    target_table,
-                    source_columns,
-                )
-                actual_strategy = "INITIAL_INSERT"
-            else:
-                rows_processed = merge_temp_to_target(
-                    silver_conn,
-                    temp_table,
-                    target_table,
-                    source_columns,
-                    primary_keys,
-                )
-                actual_strategy = "UPSERT"
-
-        elif load_strategy == "FULL_REFRESH":
-            rows_processed = full_refresh_temp_to_target(
+            temp_table = create_temp_table(
                 silver_conn,
-                temp_table,
+                source_table,
                 target_table,
                 source_columns,
             )
-            actual_strategy = "FULL_REFRESH"
 
-        else:
-            rows_processed = append_temp_to_target(
-                silver_conn,
-                temp_table,
-                target_table,
-                source_columns,
-            )
-            actual_strategy = "APPEND"
+            try:
+                copy_bronze_to_temp(
+                    bronze_conn,
+                    silver_conn,
+                    source_table,
+                    temp_table,
+                    source_columns,
+                    primary_keys,
+                    effective_bucket_count,
+                    current_bucket_id,
+                )
+
+                # Only a genuinely empty target on a non-bucketed run uses the
+                # initial plain insert. For bucketed initial loads, bucket 0 uses
+                # plain insert and later buckets use synchronization.
+                current_target_count = get_row_count(
+                    silver_conn,
+                    TARGET_SCHEMA,
+                    target_table,
+                )
+
+                if load_strategy == "SYNC_WITH_FLAG":
+                    if current_target_count == 0:
+                        bucket_rows = initial_insert_temp_to_target(
+                            silver_conn,
+                            temp_table,
+                            target_table,
+                            source_columns,
+                        )
+                        bucket_metrics = {
+                            "inserted": bucket_rows,
+                            "updated_or_reactivated": 0,
+                            "marked_inactive": 0,
+                            "rows_processed": bucket_rows,
+                        }
+                        actual_strategy = "INITIAL_INSERT"
+                    else:
+                        bucket_metrics = synchronize_temp_to_target_with_flag(
+                            silver_conn,
+                            temp_table,
+                            target_table,
+                            source_columns,
+                            primary_keys,
+                            effective_bucket_count,
+                            current_bucket_id,
+                        )
+                        bucket_rows = bucket_metrics["rows_processed"]
+                        actual_strategy = "HASH_SYNC_WITH_FLAG"
+
+                    total_inserted += bucket_metrics["inserted"]
+                    total_updated += bucket_metrics["updated_or_reactivated"]
+                    total_inactive += bucket_metrics["marked_inactive"]
+
+                elif load_strategy == "UPSERT":
+                    if current_target_count == 0:
+                        bucket_rows = initial_insert_temp_to_target(
+                            silver_conn,
+                            temp_table,
+                            target_table,
+                            source_columns,
+                        )
+                        actual_strategy = "INITIAL_INSERT"
+                    else:
+                        bucket_rows = merge_temp_to_target(
+                            silver_conn,
+                            temp_table,
+                            target_table,
+                            source_columns,
+                            primary_keys,
+                        )
+                        actual_strategy = "UPSERT"
+
+                elif load_strategy == "FULL_REFRESH":
+                    bucket_rows = full_refresh_temp_to_target(
+                        silver_conn,
+                        temp_table,
+                        target_table,
+                        source_columns,
+                    )
+
+                    with silver_conn.cursor() as cur:
+                        cur.execute(
+                            sql.SQL(
+                                "UPDATE {}.{} SET {} = {}"
+                            ).format(
+                                sql.Identifier(TARGET_SCHEMA),
+                                sql.Identifier(target_table),
+                                sql.Identifier(ACTIVE_FLAG_COLUMN),
+                                sql.Literal(ACTIVE_FLAG_Y),
+                            )
+                        )
+                    silver_conn.commit()
+                    actual_strategy = "FULL_REFRESH"
+
+                else:
+                    bucket_rows = append_temp_to_target(
+                        silver_conn,
+                        temp_table,
+                        target_table,
+                        source_columns,
+                    )
+                    actual_strategy = "APPEND"
+
+                total_rows_processed += bucket_rows
+
+            finally:
+                if temp_table:
+                    drop_temp_table(silver_conn, temp_table)
+                    temp_table = None
+
+        rows_processed = total_rows_processed
+
+        if actual_strategy == "HASH_SYNC_WITH_FLAG":
+            sync_metrics = {
+                "inserted": total_inserted,
+                "updated_or_reactivated": total_updated,
+                "marked_inactive": total_inactive,
+            }
 
         silver_count = get_row_count(
             silver_conn,
@@ -2385,9 +2734,16 @@ def process_table(
         )
 
         status = "SUCCESS"
-        message = (
-            f"Table loaded successfully using {actual_strategy} strategy."
-        )
+        if actual_strategy == "SYNC_WITH_FLAG":
+            message = (
+                "Table synchronized successfully. "
+                f"Inserted={sync_metrics['inserted']}, "
+                f"updated/reactivated={sync_metrics['updated_or_reactivated']}, "
+                f"marked inactive={sync_metrics['marked_inactive']}, "
+                f"buckets processed={effective_bucket_count}."
+            )
+        else:
+            message = f"Table loaded successfully using {actual_strategy} strategy."
 
     except Exception as exc:
         silver_conn.rollback()
@@ -2484,7 +2840,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK - VERSION 4 INSERT-MISSING")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 7 AUTO-BUCKET SNAPSHOT SYNC")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -2495,6 +2851,12 @@ def main():
         print(f"Target schema      : {TARGET_SCHEMA}")
         print(f"Control schema     : {CONTROL_SCHEMA}")
         print(f"Default strategy   : {DEFAULT_LOAD_STRATEGY}")
+        print(f"Active flag column : {ACTIVE_FLAG_COLUMN}")
+        print(f"Active/Inactive    : {ACTIVE_FLAG_Y}/{ACTIVE_FLAG_N}")
+        print(f"Row hash column    : {ROW_HASH_COLUMN}")
+        print(f"Maximum buckets    : {BUCKET_COUNT}")
+        print(f"Bucket threshold   : {BUCKET_ROW_THRESHOLD}")
+        print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
