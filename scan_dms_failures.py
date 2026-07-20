@@ -77,7 +77,6 @@ from psycopg2 import sql
 #   --ACTIVE_FLAG_COLUMN bronze_record_active_flg
 #   --ACTIVE_FLAG_Y Y
 #   --ACTIVE_FLAG_N N
-#   --ROW_HASH_COLUMN bronze_row_hash
 #   --BUCKET_COUNT 16
 #   --BUCKET_ROW_THRESHOLD 1000000
 #   --VALIDATE_KEY_OVERRIDE false
@@ -231,10 +230,6 @@ ACTIVE_FLAG_COLUMN = get_runtime_parameter(
 ACTIVE_FLAG_Y = get_runtime_parameter("ACTIVE_FLAG_Y", default="Y")
 ACTIVE_FLAG_N = get_runtime_parameter("ACTIVE_FLAG_N", default="N")
 
-ROW_HASH_COLUMN = get_runtime_parameter(
-    "ROW_HASH_COLUMN",
-    default="bronze_row_hash",
-).strip()
 
 BUCKET_COUNT = int(get_runtime_parameter("BUCKET_COUNT", default="16"))
 
@@ -1398,28 +1393,6 @@ def synchronize_target_schema(
         )
         target_map = {column["name"]: column for column in target_columns}
 
-    if ROW_HASH_COLUMN not in target_map:
-        with silver_conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    ALTER TABLE {}.{}
-                    ADD COLUMN {} char(32)
-                    """
-                ).format(
-                    sql.Identifier(TARGET_SCHEMA),
-                    sql.Identifier(target_table),
-                    sql.Identifier(ROW_HASH_COLUMN),
-                )
-            )
-        silver_conn.commit()
-
-        target_columns = get_table_columns(
-            silver_conn,
-            TARGET_SCHEMA,
-            target_table,
-        )
-        target_map = {column["name"]: column for column in target_columns}
 
     risky_changes = []
     safe_changes = []
@@ -1770,6 +1743,7 @@ def create_temp_table(
     target_table,
     source_columns,
 ):
+    """Create an empty TEMP table containing only Bronze/source columns."""
     temp_table = f"tmp_{target_table}_{RUN_ID[:8]}"
 
     source_column_list = sql.SQL(", ").join(
@@ -1781,14 +1755,13 @@ def create_temp_table(
             sql.SQL(
                 """
                 CREATE TEMP TABLE {} AS
-                SELECT {}, {}
+                SELECT {}
                 FROM {}.{}
                 WITH NO DATA
                 """
             ).format(
                 sql.Identifier(temp_table),
                 source_column_list,
-                sql.Identifier(ROW_HASH_COLUMN),
                 sql.Identifier(TARGET_SCHEMA),
                 sql.Identifier(target_table),
             )
@@ -1807,14 +1780,18 @@ def copy_bronze_to_temp(
     bucket_count=1,
     bucket_id=0,
 ):
+    """
+    Copy Bronze rows directly to Silver TEMP storage.
+
+    No MD5 or JSON conversion is performed.
+    """
     source_select_columns = sql.SQL(", ").join(
         sql.SQL("src.{}").format(sql.Identifier(column["name"]))
         for column in source_columns
     )
 
     target_columns = sql.SQL(", ").join(
-        [sql.Identifier(column["name"]) for column in source_columns]
-        + [sql.Identifier(ROW_HASH_COLUMN)]
+        sql.Identifier(column["name"]) for column in source_columns
     )
 
     bucket_predicate = build_bucket_predicate(
@@ -1828,14 +1805,7 @@ def copy_bronze_to_temp(
         """
         COPY
         (
-            SELECT
-                {},
-                md5(
-                    concat_ws(
-                        E'\\x1F',
-                        {}
-                    )
-                ) AS {}
+            SELECT {}
             FROM {}.{} src
             WHERE {}
         )
@@ -1851,13 +1821,6 @@ def copy_bronze_to_temp(
         """
     ).format(
         source_select_columns,
-        sql.SQL(", ").join(
-            sql.SQL("COALESCE(src.{}::text, '<NULL>')").format(
-                sql.Identifier(column["name"])
-            )
-            for column in source_columns
-        ),
-        sql.Identifier(ROW_HASH_COLUMN),
         sql.Identifier(SOURCE_SCHEMA),
         sql.Identifier(source_table),
         bucket_predicate,
@@ -2153,23 +2116,18 @@ def initial_insert_temp_to_target(
     target_table,
     source_columns,
 ):
+    """Initial plain INSERT with active flag Y."""
     column_names = [column["name"] for column in source_columns]
 
     insert_columns = sql.SQL(", ").join(
         [sql.Identifier(column) for column in column_names]
-        + [
-            sql.Identifier(ACTIVE_FLAG_COLUMN),
-            sql.Identifier(ROW_HASH_COLUMN),
-        ]
+        + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
     )
 
     select_columns = sql.SQL(", ").join(
         [sql.SQL("b.{}").format(sql.Identifier(column))
          for column in column_names]
-        + [
-            sql.Literal(ACTIVE_FLAG_Y),
-            sql.SQL("b.{}").format(sql.Identifier(ROW_HASH_COLUMN)),
-        ]
+        + [sql.Literal(ACTIVE_FLAG_Y)]
     )
 
     with silver_conn.cursor() as cur:
@@ -2203,9 +2161,22 @@ def synchronize_temp_to_target_with_flag(
     bucket_count=1,
     bucket_id=0,
 ):
+    """
+    Native PostgreSQL synchronization without hashes.
+
+    Matching keys:
+      - update only when a non-key source column changed
+      - reactivate the row with active flag Y
+
+    New Bronze keys:
+      - insert with active flag Y
+
+    Silver keys absent from Bronze:
+      - retain the row and mark active flag N
+    """
     if not primary_keys:
         raise RuntimeError(
-            "HASH_SYNC requires a primary key or primary_key_override."
+            "SYNC_WITH_FLAG requires a primary key or primary_key_override."
         )
 
     column_names = [column["name"] for column in source_columns]
@@ -2224,47 +2195,13 @@ def synchronize_temp_to_target_with_flag(
 
     insert_columns = sql.SQL(", ").join(
         [sql.Identifier(column) for column in column_names]
-        + [
-            sql.Identifier(ACTIVE_FLAG_COLUMN),
-            sql.Identifier(ROW_HASH_COLUMN),
-        ]
+        + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
     )
 
     select_columns = sql.SQL(", ").join(
         [sql.SQL("b.{}").format(sql.Identifier(column))
          for column in column_names]
-        + [
-            sql.Literal(ACTIVE_FLAG_Y),
-            sql.SQL("b.{}").format(sql.Identifier(ROW_HASH_COLUMN)),
-        ]
-    )
-
-    set_items = [
-        sql.SQL("{} = b.{}").format(
-            sql.Identifier(column),
-            sql.Identifier(column),
-        )
-        for column in non_key_columns
-    ]
-    set_items.extend(
-        [
-            sql.SQL("{} = {}").format(
-                sql.Identifier(ACTIVE_FLAG_COLUMN),
-                sql.Literal(ACTIVE_FLAG_Y),
-            ),
-            sql.SQL("{} = b.{}").format(
-                sql.Identifier(ROW_HASH_COLUMN),
-                sql.Identifier(ROW_HASH_COLUMN),
-            ),
-        ]
-    )
-    set_clause = sql.SQL(", ").join(set_items)
-
-    target_bucket_predicate = build_bucket_predicate(
-        "s",
-        primary_keys,
-        bucket_count,
-        bucket_id,
+        + [sql.Literal(ACTIVE_FLAG_Y)]
     )
 
     inserted_rows = 0
@@ -2273,32 +2210,78 @@ def synchronize_temp_to_target_with_flag(
 
     try:
         with silver_conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    UPDATE {}.{} s
-                    SET {}
-                    FROM {} b
-                    WHERE {}
-                      AND
-                      (
-                          s.{} IS DISTINCT FROM b.{}
-                          OR s.{} IS DISTINCT FROM {}
-                      )
-                    """
-                ).format(
-                    sql.Identifier(TARGET_SCHEMA),
-                    sql.Identifier(target_table),
-                    set_clause,
-                    sql.Identifier(temp_table),
-                    key_match,
-                    sql.Identifier(ROW_HASH_COLUMN),
-                    sql.Identifier(ROW_HASH_COLUMN),
-                    sql.Identifier(ACTIVE_FLAG_COLUMN),
-                    sql.Literal(ACTIVE_FLAG_Y),
+            if non_key_columns:
+                set_clause = sql.SQL(", ").join(
+                    [
+                        sql.SQL("{} = b.{}").format(
+                            sql.Identifier(column),
+                            sql.Identifier(column),
+                        )
+                        for column in non_key_columns
+                    ]
+                    + [
+                        sql.SQL("{} = {}").format(
+                            sql.Identifier(ACTIVE_FLAG_COLUMN),
+                            sql.Literal(ACTIVE_FLAG_Y),
+                        )
+                    ]
                 )
-            )
-            updated_rows = cur.rowcount
+
+                changed_predicate = sql.SQL(" OR ").join(
+                    sql.SQL("s.{} IS DISTINCT FROM b.{}").format(
+                        sql.Identifier(column),
+                        sql.Identifier(column),
+                    )
+                    for column in non_key_columns
+                )
+
+                cur.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {}.{} s
+                        SET {}
+                        FROM {} b
+                        WHERE {}
+                          AND
+                          (
+                              {}
+                              OR s.{} IS DISTINCT FROM {}
+                          )
+                        """
+                    ).format(
+                        sql.Identifier(TARGET_SCHEMA),
+                        sql.Identifier(target_table),
+                        set_clause,
+                        sql.Identifier(temp_table),
+                        key_match,
+                        changed_predicate,
+                        sql.Identifier(ACTIVE_FLAG_COLUMN),
+                        sql.Literal(ACTIVE_FLAG_Y),
+                    )
+                )
+                updated_rows = cur.rowcount
+            else:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {}.{} s
+                        SET {} = {}
+                        FROM {} b
+                        WHERE {}
+                          AND s.{} IS DISTINCT FROM {}
+                        """
+                    ).format(
+                        sql.Identifier(TARGET_SCHEMA),
+                        sql.Identifier(target_table),
+                        sql.Identifier(ACTIVE_FLAG_COLUMN),
+                        sql.Literal(ACTIVE_FLAG_Y),
+                        sql.Identifier(temp_table),
+                        key_match,
+                        sql.Identifier(ACTIVE_FLAG_COLUMN),
+                        sql.Literal(ACTIVE_FLAG_Y),
+                    )
+                )
+                updated_rows = cur.rowcount
 
             cur.execute(
                 sql.SQL(
@@ -2332,6 +2315,13 @@ def synchronize_temp_to_target_with_flag(
                     sql.Identifier(key),
                 )
                 for key in primary_keys
+            )
+
+            target_bucket_predicate = build_bucket_predicate(
+                "s",
+                primary_keys,
+                bucket_count,
+                bucket_id,
             )
 
             cur.execute(
@@ -2757,7 +2747,7 @@ def process_table(
                             current_bucket_id,
                         )
                         bucket_rows = bucket_metrics["rows_processed"]
-                        actual_strategy = "HASH_SYNC_WITH_FLAG"
+                        actual_strategy = "NATIVE_SYNC_WITH_FLAG"
 
                     total_inserted += bucket_metrics["inserted"]
                     total_updated += bucket_metrics["updated_or_reactivated"]
@@ -2822,7 +2812,7 @@ def process_table(
 
         rows_processed = total_rows_processed
 
-        if actual_strategy == "HASH_SYNC_WITH_FLAG":
+        if actual_strategy == "NATIVE_SYNC_WITH_FLAG":
             sync_metrics = {
                 "inserted": total_inserted,
                 "updated_or_reactivated": total_updated,
@@ -2942,7 +2932,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 8 FAST HASH SYNC")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 9 NATIVE-COMPARE MULTI-SCHEMA")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -2955,7 +2945,6 @@ def main():
         print(f"Default strategy   : {DEFAULT_LOAD_STRATEGY}")
         print(f"Active flag column : {ACTIVE_FLAG_COLUMN}")
         print(f"Active/Inactive    : {ACTIVE_FLAG_Y}/{ACTIVE_FLAG_N}")
-        print(f"Row hash column    : {ROW_HASH_COLUMN}")
         print(f"Maximum buckets    : {BUCKET_COUNT}")
         print(f"Bucket threshold   : {BUCKET_ROW_THRESHOLD}")
         print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
