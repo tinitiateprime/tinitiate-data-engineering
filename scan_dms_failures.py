@@ -22,7 +22,7 @@
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
 #   9. Use PostgreSQL COPY for efficient bulk data transfer.
-#  10. Support UPSERT, FULL_REFRESH and APPEND load strategies.
+#  10. Support INITIAL_INSERT, INSERT_MISSING, UPSERT, FULL_REFRESH and APPEND.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
 #  13. Store datatype issues in the schema-review table.
@@ -34,7 +34,7 @@
 #   - Never automatically apply risky or narrowing datatype changes.
 #   - Never alter a datatype while dependent database objects exist.
 #   - Always record a final control-table entry for every attempted table.
-#   - AUTO selects UPSERT for keyed tables and FULL_REFRESH for no-key tables.
+#   - AUTO selects INITIAL_INSERT/INSERT_MISSING for keyed tables and FULL_REFRESH for no-key tables.
 #
 ###############################################################################
 
@@ -78,8 +78,9 @@ from psycopg2 import sql
 #   --EXCLUDE_TABLES table3,table4
 #
 # AUTO strategy:
-#   Table has PK/override  -> UPSERT
-#   Table has no PK        -> FULL_REFRESH
+#   Keyed table + empty Silver    -> INITIAL_INSERT
+#   Keyed table + populated Silver -> INSERT_MISSING
+#   Table has no PK               -> FULL_REFRESH
 ###############################################################################
 
 ###############################################################################
@@ -206,8 +207,9 @@ JOB_NAME = get_runtime_parameter(
 )
 
 # AUTO means:
-#   - Use UPSERT when a real/overridden key exists.
-#   - Use FULL_REFRESH when no reliable key exists.
+#   - Keyed table and empty Silver: simple INITIAL_INSERT.
+#   - Keyed table and populated Silver: INSERT_MISSING by key.
+#   - No reliable key: FULL_REFRESH.
 DEFAULT_LOAD_STRATEGY = get_runtime_parameter(
     "DEFAULT_LOAD_STRATEGY",
     default="AUTO",
@@ -1922,6 +1924,123 @@ def append_temp_to_target(
     return affected_rows
 
 
+
+def initial_insert_temp_to_target(
+    silver_conn,
+    temp_table,
+    target_table,
+    source_columns,
+):
+    """
+    First-time load for a keyed table when the Silver target contains zero rows.
+
+    This uses a plain INSERT without ON CONFLICT, avoiding per-row conflict
+    checks during the initial bulk load.
+    """
+    column_names = [column["name"] for column in source_columns]
+
+    column_list = sql.SQL(", ").join(
+        sql.Identifier(column) for column in column_names
+    )
+
+    select_columns = sql.SQL(", ").join(
+        sql.SQL("b.{}").format(sql.Identifier(column))
+        for column in column_names
+    )
+
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.{} ({})
+                SELECT {}
+                FROM {} b
+                """
+            ).format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+                column_list,
+                select_columns,
+                sql.Identifier(temp_table),
+            )
+        )
+        affected_rows = cur.rowcount
+
+    silver_conn.commit()
+    return affected_rows
+
+
+def insert_missing_temp_to_target(
+    silver_conn,
+    temp_table,
+    target_table,
+    source_columns,
+    primary_keys,
+):
+    """
+    Daily insert-only comparison for large keyed tables.
+
+    Only rows whose primary/business key does not already exist in Silver are
+    inserted. Existing Silver rows are not updated.
+
+    This is appropriate when the source table is append-only or when the
+    requirement is specifically to capture missing records.
+    """
+    if not primary_keys:
+        raise RuntimeError(
+            "INSERT_MISSING requires a primary key or primary_key_override."
+        )
+
+    column_names = [column["name"] for column in source_columns]
+
+    insert_columns = sql.SQL(", ").join(
+        sql.Identifier(column) for column in column_names
+    )
+
+    select_columns = sql.SQL(", ").join(
+        sql.SQL("b.{}").format(sql.Identifier(column))
+        for column in column_names
+    )
+
+    key_match = sql.SQL(" AND ").join(
+        sql.SQL("s.{} = b.{}").format(
+            sql.Identifier(key),
+            sql.Identifier(key),
+        )
+        for key in primary_keys
+    )
+
+    statement = sql.SQL(
+        """
+        INSERT INTO {}.{} ({})
+        SELECT {}
+        FROM {} b
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM {}.{} s
+            WHERE {}
+        )
+        """
+    ).format(
+        sql.Identifier(TARGET_SCHEMA),
+        sql.Identifier(target_table),
+        insert_columns,
+        select_columns,
+        sql.Identifier(temp_table),
+        sql.Identifier(TARGET_SCHEMA),
+        sql.Identifier(target_table),
+        key_match,
+    )
+
+    with silver_conn.cursor() as cur:
+        cur.execute(statement)
+        affected_rows = cur.rowcount
+
+    silver_conn.commit()
+    return affected_rows
+
+
 def merge_temp_to_target(
     silver_conn,
     temp_table,
@@ -2001,7 +2120,7 @@ def drop_temp_table(silver_conn, temp_table):
 #   5. Block the table if any schema review is required.
 #   6. Create the TEMP table.
 #   7. COPY Bronze data to the TEMP table.
-#   8. Merge TEMP data into Silver.
+#   8. Initial insert, insert missing, upsert, full refresh or append.
 #   9. Count Silver rows.
 #  10. Drop the TEMP table.
 #  11. Write the final control-table record.
@@ -2042,13 +2161,14 @@ def process_table(
 
         if requested_load_strategy not in {
             "AUTO",
+            "INSERT_MISSING",
             "UPSERT",
             "FULL_REFRESH",
             "APPEND",
         }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "AUTO, UPSERT, FULL_REFRESH, APPEND. "
+                "AUTO, INSERT_MISSING, UPSERT, FULL_REFRESH, APPEND. "
                 f"Received={requested_load_strategy}"
             )
 
@@ -2075,19 +2195,23 @@ def process_table(
             )
 
         if requested_load_strategy == "AUTO":
-            load_strategy = "UPSERT" if primary_keys else "FULL_REFRESH"
+            load_strategy = (
+                "INSERT_MISSING"
+                if primary_keys
+                else "FULL_REFRESH"
+            )
         else:
             load_strategy = requested_load_strategy
 
-        if load_strategy == "UPSERT" and not primary_keys:
+        if load_strategy in {"UPSERT", "INSERT_MISSING"} and not primary_keys:
             raise RuntimeError(
-                "UPSERT requires a source primary key or a reliable "
+                f"{load_strategy} requires a source primary key or a reliable "
                 f"primary_key_override in {CONTROL_SCHEMA}.etl_table_config. "
                 "Use load_strategy='AUTO' or 'FULL_REFRESH' for tables "
                 "without a reliable key."
             )
 
-        if load_strategy != "UPSERT":
+        if load_strategy not in {"UPSERT", "INSERT_MISSING"}:
             # FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
 
@@ -2112,7 +2236,7 @@ def process_table(
                 + ", ".join(missing_primary_keys)
             )
 
-        if load_strategy == "UPSERT":
+        if load_strategy in {"UPSERT", "INSERT_MISSING"}:
             validate_unique_key(
                 bronze_conn,
                 source_table,
@@ -2155,12 +2279,18 @@ def process_table(
             )
             return
 
-        if load_strategy == "UPSERT":
+        if load_strategy in {"UPSERT", "INSERT_MISSING"}:
             ensure_target_unique_constraint(
                 silver_conn,
                 target_table,
                 primary_keys,
             )
+
+        target_count_before_load = get_row_count(
+            silver_conn,
+            TARGET_SCHEMA,
+            target_table,
+        )
 
         temp_table = create_temp_table(
             silver_conn,
@@ -2177,14 +2307,59 @@ def process_table(
             source_columns,
         )
 
-        if load_strategy == "UPSERT":
-            rows_processed = merge_temp_to_target(
-                silver_conn,
-                temp_table,
-                target_table,
-                source_columns,
-                primary_keys,
-            )
+        actual_strategy = load_strategy
+
+        if load_strategy == "INSERT_MISSING":
+            if target_count_before_load == 0:
+                print(
+                    f"[{source_table}] Silver target is empty. "
+                    "Using INITIAL_INSERT."
+                )
+                rows_processed = initial_insert_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                )
+                actual_strategy = "INITIAL_INSERT"
+            else:
+                print(
+                    f"[{source_table}] Silver target contains "
+                    f"{target_count_before_load} rows. "
+                    "Using INSERT_MISSING."
+                )
+                rows_processed = insert_missing_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                    primary_keys,
+                )
+                actual_strategy = "INSERT_MISSING"
+
+        elif load_strategy == "UPSERT":
+            if target_count_before_load == 0:
+                print(
+                    f"[{source_table}] Silver target is empty. "
+                    "Using INITIAL_INSERT instead of UPSERT."
+                )
+                rows_processed = initial_insert_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                )
+                actual_strategy = "INITIAL_INSERT"
+            else:
+                rows_processed = merge_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                    primary_keys,
+                )
+                actual_strategy = "UPSERT"
+
         elif load_strategy == "FULL_REFRESH":
             rows_processed = full_refresh_temp_to_target(
                 silver_conn,
@@ -2192,6 +2367,8 @@ def process_table(
                 target_table,
                 source_columns,
             )
+            actual_strategy = "FULL_REFRESH"
+
         else:
             rows_processed = append_temp_to_target(
                 silver_conn,
@@ -2199,6 +2376,7 @@ def process_table(
                 target_table,
                 source_columns,
             )
+            actual_strategy = "APPEND"
 
         silver_count = get_row_count(
             silver_conn,
@@ -2208,7 +2386,7 @@ def process_table(
 
         status = "SUCCESS"
         message = (
-            f"Table loaded successfully using {load_strategy} strategy."
+            f"Table loaded successfully using {actual_strategy} strategy."
         )
 
     except Exception as exc:
@@ -2306,7 +2484,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK - VERSION 3 NO-ARRAY")
+        print("POSTGRES BRONZE-TO-SILVER FRAMEWORK - VERSION 4 INSERT-MISSING")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
