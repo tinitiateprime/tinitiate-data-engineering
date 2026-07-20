@@ -38,13 +38,16 @@ REQUIRED_ARGS = [
 
     "CONTROL_SCHEMA",
     "DEFAULT_LOAD_STRATEGY",
-
-    "TIMESTAMP_COLUMN_CANDIDATES",
 ]
 
 
 OPTIONAL_DEFAULTS = {
     "ROLLING_WINDOW_DAYS": "5",
+    "TIMESTAMP_COLUMN_CANDIDATES": (
+        "TIME_STAMP,TIMESTAMP,UPDATED_AT,UPDATE_TIMESTAMP,"
+        "MODIFIED_AT,MODIFIED_DATE,LAST_UPDATED_AT,"
+        "LAST_UPDATE_DATE,INGESTED_AT,CREATED_AT,CREATE_DATE"
+    ),
     "ACTIVE_FLAG_COLUMN": "bronze_record_active_flg",
     "ACTIVE_FLAG_Y": "Y",
     "ACTIVE_FLAG_N": "N",
@@ -498,18 +501,9 @@ def detect_timestamp_column(
     source_columns,
     configured_timestamp_column=None
 ):
-    """
-    Case-insensitive timestamp detection.
-
-    This correctly matches:
-
-        TIME_STAMP
-        time_stamp
-        Time_Stamp
-    """
-
+    """Detect a usable DATE/TIMESTAMP column case-insensitively."""
     actual_columns = {
-        item["column_name"].strip().upper(): item["column_name"]
+        item["column_name"].strip().upper(): item
         for item in source_columns
     }
 
@@ -519,8 +513,6 @@ def detect_timestamp_column(
         candidates.append(configured_timestamp_column)
 
     candidates.extend(TIMESTAMP_COLUMN_CANDIDATES)
-
-    # Additional safe defaults.
     candidates.extend(
         [
             "TIME_STAMP",
@@ -533,23 +525,33 @@ def detect_timestamp_column(
             "LAST_UPDATE_DATE",
             "INGESTED_AT",
             "CREATED_AT",
+            "CREATE_DATE",
         ]
     )
-
-    deduplicated_candidates = []
 
     seen = set()
 
     for candidate in candidates:
-        normalized = candidate.strip().upper()
+        normalized = str(candidate).strip().strip('"').strip("'").upper()
 
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            deduplicated_candidates.append(normalized)
+        if not normalized or normalized in seen:
+            continue
 
-    for candidate in deduplicated_candidates:
-        if candidate in actual_columns:
-            return actual_columns[candidate]
+        seen.add(normalized)
+        column = actual_columns.get(normalized)
+
+        if not column:
+            continue
+
+        data_type = str(column.get("data_type", "")).lower()
+
+        if data_type == "date" or "timestamp" in data_type:
+            return column["column_name"]
+
+        log(
+            f"[TIMESTAMP] Candidate {column['column_name']} exists "
+            f"but datatype={data_type} is not date/timestamp."
+        )
 
     return None
 
@@ -1305,21 +1307,24 @@ def resolve_strategy(
         )
 
     if strategy == "AUTO":
-        if timestamp_column:
-            return "ROLLING_WINDOW_REPLACE"
+        return (
+            "ROLLING_WINDOW_REPLACE"
+            if timestamp_column is not None
+            else "SNAPSHOT_REPLACE"
+        )
 
-        return "SNAPSHOT_REPLACE"
+    if strategy == "ROLLING_WINDOW_REPLACE":
+        if timestamp_column is None:
+            log(
+                "[STRATEGY] No usable timestamp column was detected; "
+                "falling back to SNAPSHOT_REPLACE."
+            )
+            return "SNAPSHOT_REPLACE"
 
-    if (
-        strategy == "ROLLING_WINDOW_REPLACE"
-        and not timestamp_column
-    ):
-        return "SNAPSHOT_REPLACE"
+        return "ROLLING_WINDOW_REPLACE"
 
     if strategy == "UPSERT" and not primary_keys:
-        raise ValueError(
-            "UPSERT requires primary key columns"
-        )
+        raise ValueError("UPSERT requires primary key columns")
 
     return strategy
 
@@ -1347,6 +1352,7 @@ def process_table(table_config):
     )
 
     control_id = None
+    dataframe = None
 
     bronze_count = None
     silver_count = None
@@ -1396,6 +1402,11 @@ def process_table(table_config):
         timestamp_column = detect_timestamp_column(
             source_columns=source_columns,
             configured_timestamp_column=configured_timestamp,
+        )
+
+        log(
+            f"[{source_table}] FINAL timestamp_column="
+            f"{timestamp_column!r}"
         )
 
         available_column_names = [
@@ -1451,51 +1462,39 @@ def process_table(table_config):
         window_start = None
 
         if resolved_strategy == "ROLLING_WINDOW_REPLACE":
-            if not timestamp_column:
-                log(
-                    f"[{source_table}] "
-                    "No timestamp column found; "
-                    "starting atomic SNAPSHOT_REPLACE."
-                )
+            window_start = (
+                datetime.now(timezone.utc)
+                - timedelta(days=ROLLING_WINDOW_DAYS)
+            ).replace(tzinfo=None)
 
-                resolved_strategy = "SNAPSHOT_REPLACE"
-
-            else:
-                window_start = (
-                    datetime.now(timezone.utc)
-                    - timedelta(days=ROLLING_WINDOW_DAYS)
-                ).replace(tzinfo=None)
-
-                log(
-                    f"[{source_table}] "
-                    f"Using timestamp column={timestamp_column}; "
-                    f"window_start={window_start}; "
-                    f"rolling_days={ROLLING_WINDOW_DAYS}"
-                )
+            log(
+                f"[{source_table}] "
+                f"Using timestamp column={timestamp_column}; "
+                f"window_start={window_start}; "
+                f"rolling_days={ROLLING_WINDOW_DAYS}"
+            )
+        else:
+            log(
+                f"[{source_table}] No usable timestamp column detected; "
+                f"using SNAPSHOT_REPLACE."
+            )
 
         dataframe = read_source_dataframe(
             source_schema=source_schema,
             source_table=source_table,
             timestamp_column=(
                 timestamp_column
-                if resolved_strategy
-                == "ROLLING_WINDOW_REPLACE"
+                if resolved_strategy == "ROLLING_WINDOW_REPLACE"
                 else None
             ),
             window_start=(
                 window_start
-                if resolved_strategy
-                == "ROLLING_WINDOW_REPLACE"
+                if resolved_strategy == "ROLLING_WINDOW_REPLACE"
                 else None
             ),
-        )
+        ).persist()
 
-        if ENABLE_EXACT_COUNTS:
-            bronze_count = dataframe.count()
-        else:
-            # rows_processed still requires a Spark action.
-            bronze_count = dataframe.count()
-
+        bronze_count = dataframe.count()
         rows_processed = bronze_count
 
         log(
@@ -1574,6 +1573,8 @@ def process_table(table_config):
             f"error_count=0"
         )
 
+        dataframe.unpersist()
+
         return {
             "table": source_table,
             "status": "SUCCESS",
@@ -1583,6 +1584,12 @@ def process_table(table_config):
         }
 
     except Exception as exc:
+        if dataframe is not None:
+            try:
+                dataframe.unpersist()
+            except Exception:
+                pass
+
         elapsed_seconds = round(
             time.time() - start_time,
             2
@@ -1625,6 +1632,7 @@ def process_table(table_config):
 
 def main():
     log("=" * 90)
+    log("[FRAMEWORK] VERSION 17 - FIXED TIMESTAMP ROLLING WINDOW")
 
     log(
         f"[FRAMEWORK] Job={JOB_NAME}, "
