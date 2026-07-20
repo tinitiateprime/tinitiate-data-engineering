@@ -22,7 +22,7 @@
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
 #   9. Stream PostgreSQL COPY directly from Bronze to Silver TEMP storage.
-#  10. Support fast rolling-window replacement plus legacy strategies.
+#  10. Support current-day PK merge, timestamp replace and legacy strategies.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
 #  13. Store datatype issues in the schema-review table.
@@ -91,8 +91,9 @@ from psycopg2 import sql
 #   --EXCLUDE_TABLES table3,table4
 #
 # AUTO strategy:
-#   Timestamp/date column found -> ROLLING_WINDOW_REPLACE
-#   No timestamp/date column    -> NO_TIMESTAMP_STRATEGY
+#   Timestamp + reliable key -> CURRENT_DAY_MERGE
+#   Timestamp + no key       -> CURRENT_DAY_REPLACE
+#   No timestamp             -> NO_TIMESTAMP_STRATEGY
 ###############################################################################
 
 ###############################################################################
@@ -2027,6 +2028,236 @@ def copy_bronze_to_temp(
     )
 
 
+def copy_current_day_bronze_to_temp(
+    bronze_conn,
+    silver_conn,
+    source_table,
+    temp_table,
+    source_columns,
+    timestamp_column,
+):
+    """
+    Stream only rows whose source timestamp date is CURRENT_DATE.
+
+    The DBA already republishes the rolling five-day source set with today's
+    TIME_STAMP. Glue therefore must not subtract five days again.
+    """
+    source_select_columns = sql.SQL(", ").join(
+        sql.SQL("src.{}").format(sql.Identifier(column["name"]))
+        for column in source_columns
+    )
+
+    target_columns = sql.SQL(", ").join(
+        sql.Identifier(column["name"]) for column in source_columns
+    )
+
+    source_copy = sql.SQL(
+        """
+        COPY
+        (
+            SELECT {}
+            FROM {}.{} src
+            WHERE src.{}::date = CURRENT_DATE
+        )
+        TO STDOUT
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        source_select_columns,
+        sql.Identifier(SOURCE_SCHEMA),
+        sql.Identifier(source_table),
+        sql.Identifier(timestamp_column),
+    )
+
+    target_copy = sql.SQL(
+        """
+        COPY {} ({})
+        FROM STDIN
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        sql.Identifier(temp_table),
+        target_columns,
+    )
+
+    read_fd, write_fd = os.pipe()
+    producer_errors = []
+    copy_started = time.monotonic()
+
+    def producer():
+        try:
+            with os.fdopen(
+                write_fd,
+                mode="w",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_writer:
+                with bronze_conn.cursor() as bronze_cur:
+                    bronze_cur.copy_expert(
+                        source_copy.as_string(bronze_conn),
+                        pipe_writer,
+                    )
+        except BaseException as exc:
+            producer_errors.append(exc)
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    producer_thread = threading.Thread(
+        target=producer,
+        name=f"current-day-copy-{source_table}",
+        daemon=True,
+    )
+
+    print(
+        f"[{source_table}] Starting CURRENT_DATE streaming COPY "
+        f"using {timestamp_column}."
+    )
+
+    producer_thread.start()
+    consumer_error = None
+
+    try:
+        with os.fdopen(
+            read_fd,
+            mode="r",
+            buffering=COPY_PIPE_BUFFER_BYTES,
+            encoding="utf-8",
+            newline="",
+        ) as pipe_reader:
+            with silver_conn.cursor() as silver_cur:
+                silver_cur.copy_expert(
+                    target_copy.as_string(silver_conn),
+                    pipe_reader,
+                )
+    except BaseException as exc:
+        consumer_error = exc
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+    finally:
+        producer_thread.join()
+
+    if consumer_error is not None:
+        silver_conn.rollback()
+        raise RuntimeError(
+            f"Silver current-day COPY failed for {source_table}: "
+            f"{consumer_error}"
+        ) from consumer_error
+
+    if producer_errors:
+        silver_conn.rollback()
+        producer_error = producer_errors[0]
+        raise RuntimeError(
+            f"Bronze current-day COPY failed for {source_table}: "
+            f"{producer_error}"
+        ) from producer_error
+
+    print(
+        f"[{source_table}] CURRENT_DATE streaming COPY completed in "
+        f"{time.monotonic() - copy_started:.2f} seconds."
+    )
+
+
+def get_temp_row_count(silver_conn, temp_table):
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}").format(
+                sql.Identifier(temp_table)
+            )
+        )
+        return int(cur.fetchone()[0])
+
+
+def current_day_replace_temp_to_target(
+    silver_conn,
+    temp_table,
+    target_table,
+    source_columns,
+    timestamp_column,
+):
+    """
+    Fallback for timestamped tables without a reliable key.
+
+    Delete only today's target slice and insert today's Bronze slice.
+    This is not used for keyed tables; keyed tables use CURRENT_DAY_MERGE.
+    """
+    column_names = [column["name"] for column in source_columns]
+
+    insert_columns = sql.SQL(", ").join(
+        [sql.Identifier(column) for column in column_names]
+        + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
+    )
+
+    select_columns = sql.SQL(", ").join(
+        [sql.SQL("src.{}").format(sql.Identifier(column))
+         for column in column_names]
+        + [sql.Literal(ACTIVE_FLAG_Y)]
+    )
+
+    try:
+        with silver_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    DELETE FROM {}.{}
+                    WHERE {}::date = CURRENT_DATE
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    sql.Identifier(timestamp_column),
+                )
+            )
+            deleted_rows = cur.rowcount
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {}.{} ({})
+                    SELECT {}
+                    FROM {} src
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    insert_columns,
+                    select_columns,
+                    sql.Identifier(temp_table),
+                )
+            )
+            inserted_rows = cur.rowcount
+
+        silver_conn.commit()
+
+    except Exception:
+        silver_conn.rollback()
+        raise
+
+    return {
+        "deleted": deleted_rows,
+        "inserted": inserted_rows,
+        "rows_processed": inserted_rows,
+    }
+
+
 def find_incremental_timestamp_column(
     source_columns,
     configured_timestamp_column=None,
@@ -3224,6 +3455,8 @@ def process_table(
 
         if requested_load_strategy not in {
             "AUTO",
+            "CURRENT_DAY_MERGE",
+            "CURRENT_DAY_REPLACE",
             "ROLLING_WINDOW_REPLACE",
             "SYNC_WITH_FLAG",
             "UPSERT",
@@ -3232,7 +3465,9 @@ def process_table(
         }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "AUTO, ROLLING_WINDOW_REPLACE, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
+                "AUTO, CURRENT_DAY_MERGE, CURRENT_DAY_REPLACE, "
+                "ROLLING_WINDOW_REPLACE, SYNC_WITH_FLAG, UPSERT, "
+                "FULL_REFRESH, APPEND. "
                 f"Received={requested_load_strategy}"
             )
 
@@ -3264,20 +3499,28 @@ def process_table(
         )
 
         if requested_load_strategy == "AUTO":
-            load_strategy = (
-                "ROLLING_WINDOW_REPLACE"
-                if timestamp_column
-                else NO_TIMESTAMP_STRATEGY
-            )
-        elif (
-            requested_load_strategy == "ROLLING_WINDOW_REPLACE"
-            and not timestamp_column
-        ):
+            if timestamp_column and primary_keys:
+                load_strategy = "CURRENT_DAY_MERGE"
+            elif timestamp_column:
+                load_strategy = "CURRENT_DAY_REPLACE"
+            else:
+                load_strategy = NO_TIMESTAMP_STRATEGY
+
+        elif requested_load_strategy in {
+            "CURRENT_DAY_MERGE",
+            "CURRENT_DAY_REPLACE",
+            "ROLLING_WINDOW_REPLACE",
+        } and not timestamp_column:
             load_strategy = NO_TIMESTAMP_STRATEGY
+
         else:
             load_strategy = requested_load_strategy
 
-        if load_strategy in {"UPSERT", "SYNC_WITH_FLAG"} and not primary_keys:
+        if load_strategy in {
+            "UPSERT",
+            "SYNC_WITH_FLAG",
+            "CURRENT_DAY_MERGE",
+        } and not primary_keys:
             raise RuntimeError(
                 f"{load_strategy} requires a source primary key or a reliable "
                 f"primary_key_override in {CONTROL_SCHEMA}.etl_table_config. "
@@ -3285,8 +3528,12 @@ def process_table(
                 "without a reliable key."
             )
 
-        if load_strategy not in {"UPSERT", "SYNC_WITH_FLAG"}:
-            # ROLLING_WINDOW_REPLACE, FULL_REFRESH and APPEND do not require a key.
+        if load_strategy not in {
+            "UPSERT",
+            "SYNC_WITH_FLAG",
+            "CURRENT_DAY_MERGE",
+        }:
+            # Replace/full-refresh/append strategies do not require a key.
             primary_keys = []
 
         print(
@@ -3363,7 +3610,11 @@ def process_table(
             )
             return
 
-        if load_strategy in {"UPSERT", "SYNC_WITH_FLAG"}:
+        if load_strategy in {
+            "UPSERT",
+            "SYNC_WITH_FLAG",
+            "CURRENT_DAY_MERGE",
+        }:
             ensure_target_unique_constraint(
                 silver_conn,
                 target_table,
@@ -3375,6 +3626,79 @@ def process_table(
             TARGET_SCHEMA,
             target_table,
         )
+
+        if load_strategy in {
+            "CURRENT_DAY_MERGE",
+            "CURRENT_DAY_REPLACE",
+        }:
+            temp_table = create_temp_table(
+                silver_conn,
+                source_table,
+                target_table,
+                source_columns,
+            )
+
+            copy_current_day_bronze_to_temp(
+                bronze_conn,
+                silver_conn,
+                source_table,
+                temp_table,
+                source_columns,
+                timestamp_column,
+            )
+
+            current_day_count = get_temp_row_count(
+                silver_conn,
+                temp_table,
+            )
+
+            print(
+                f"[{source_table}] Current-day source rows="
+                f"{current_day_count}."
+            )
+
+            if load_strategy == "CURRENT_DAY_MERGE":
+                # ON CONFLICT performs the PostgreSQL upsert/merge:
+                # matching PK -> update all non-key source columns
+                # missing PK  -> insert the complete source row
+                rows_processed = merge_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                    primary_keys,
+                )
+
+                message = (
+                    f"Merged {current_day_count} current-date Bronze rows "
+                    f"into Silver using {timestamp_column} and key "
+                    f"{primary_keys}."
+                )
+
+            else:
+                replace_result = current_day_replace_temp_to_target(
+                    silver_conn,
+                    temp_table,
+                    target_table,
+                    source_columns,
+                    timestamp_column,
+                )
+
+                rows_processed = replace_result["rows_processed"]
+                message = (
+                    f"No reliable key was available. Replaced today's "
+                    f"Silver slice using {timestamp_column}; "
+                    f"deleted={replace_result['deleted']}, "
+                    f"inserted={replace_result['inserted']}."
+                )
+
+            silver_count = get_audit_row_count(
+                silver_conn,
+                TARGET_SCHEMA,
+                target_table,
+            )
+            status = "SUCCESS"
+            return
 
         if load_strategy == "ROLLING_WINDOW_REPLACE":
             if not timestamp_column:
@@ -3417,7 +3741,7 @@ def process_table(
             )
             status = "SUCCESS"
             message = (
-                f"Silver refreshed from Bronze for the last "
+                f"Silver refreshed from Bronze for the configured lookback "
                 f"{LOOKBACK_DAYS} days using {timestamp_column}."
             )
             return
@@ -3697,7 +4021,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 17 TIMESTAMP DETECTION FIX")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 18 CURRENT-DAY MERGE")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
