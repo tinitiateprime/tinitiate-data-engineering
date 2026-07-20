@@ -21,7 +21,7 @@
 #   6. Block the complete table when a risky datatype change is detected.
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
-#   9. Use PostgreSQL COPY for efficient bulk data transfer.
+#   9. Stream PostgreSQL COPY directly from Bronze to Silver TEMP storage.
 #  10. Support INITIAL_INSERT, INSERT_MISSING, UPSERT, FULL_REFRESH and APPEND.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
@@ -42,8 +42,9 @@ import os
 import re
 import sys
 import uuid
-import tempfile
 import traceback
+import threading
+import time
 from datetime import datetime, timezone
 
 import psycopg2
@@ -82,6 +83,7 @@ from psycopg2 import sql
 #   --VALIDATE_KEY_OVERRIDE false
 #   --ENABLE_EXACT_COUNTS false
 #   --ANALYZE_TEMP_TABLE true
+#   --COPY_PIPE_BUFFER_BYTES 1048576
 #   --INCLUDE_TABLES table1,table2
 #   --EXCLUDE_TABLES table3,table4
 #
@@ -268,6 +270,20 @@ ANALYZE_TEMP_TABLE = (
     .lower()
     in {"1", "true", "t", "yes", "y"}
 )
+
+# Producer/consumer pipe buffer used while streaming PostgreSQL COPY output
+# directly from Bronze into Silver TEMP storage.
+COPY_PIPE_BUFFER_BYTES = int(
+    get_runtime_parameter(
+        "COPY_PIPE_BUFFER_BYTES",
+        default="1048576",
+    )
+)
+
+if COPY_PIPE_BUFFER_BYTES < 8192:
+    raise ValueError(
+        "COPY_PIPE_BUFFER_BYTES must be at least 8192."
+    )
 
 RUN_ID = uuid.uuid4().hex
 
@@ -1781,9 +1797,21 @@ def copy_bronze_to_temp(
     bucket_id=0,
 ):
     """
-    Copy Bronze rows directly to Silver TEMP storage.
+    Stream PostgreSQL COPY output directly from Bronze to Silver TEMP storage.
 
-    No MD5 or JSON conversion is performed.
+    The earlier implementation first wrote the complete source extract to the
+    Glue worker's local disk and only then started Silver COPY. This version
+    uses an OS pipe:
+
+        Bronze COPY TO STDOUT
+            -> bounded pipe
+            -> Silver COPY FROM STDIN
+
+    Benefits:
+      - Silver starts loading immediately.
+      - No full-table local temporary file.
+      - Lower Glue ephemeral-disk usage.
+      - Natural backpressure between Bronze and Silver.
     """
     source_select_columns = sql.SQL(", ").join(
         sql.SQL("src.{}").format(sql.Identifier(column["name"]))
@@ -1844,24 +1872,89 @@ def copy_bronze_to_temp(
         target_columns,
     )
 
-    with tempfile.TemporaryFile(
-        mode="w+",
-        encoding="utf-8",
-        newline="",
-    ) as transfer_file:
-        with bronze_conn.cursor() as bronze_cur:
-            bronze_cur.copy_expert(
-                source_copy.as_string(bronze_conn),
-                transfer_file,
-            )
+    read_fd, write_fd = os.pipe()
+    producer_errors = []
+    copy_started = time.monotonic()
 
-        transfer_file.seek(0)
+    def bronze_copy_producer():
+        try:
+            with os.fdopen(
+                write_fd,
+                mode="w",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_writer:
+                with bronze_conn.cursor() as bronze_cur:
+                    bronze_cur.copy_expert(
+                        source_copy.as_string(bronze_conn),
+                        pipe_writer,
+                    )
+        except BaseException as exc:
+            producer_errors.append(exc)
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
 
-        with silver_conn.cursor() as silver_cur:
-            silver_cur.copy_expert(
-                target_copy.as_string(silver_conn),
-                transfer_file,
-            )
+    producer_thread = threading.Thread(
+        target=bronze_copy_producer,
+        name=f"bronze-copy-{source_table}",
+        daemon=True,
+    )
+
+    print(
+        f"[{source_table}] Starting streaming COPY "
+        f"for bucket {bucket_id + 1}/{bucket_count}"
+    )
+
+    producer_thread.start()
+
+    consumer_error = None
+
+    try:
+        with os.fdopen(
+            read_fd,
+            mode="r",
+            buffering=COPY_PIPE_BUFFER_BYTES,
+            encoding="utf-8",
+            newline="",
+        ) as pipe_reader:
+            with silver_conn.cursor() as silver_cur:
+                silver_cur.copy_expert(
+                    target_copy.as_string(silver_conn),
+                    pipe_reader,
+                )
+    except BaseException as exc:
+        consumer_error = exc
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+    finally:
+        producer_thread.join()
+
+    elapsed_seconds = time.monotonic() - copy_started
+
+    if consumer_error is not None:
+        silver_conn.rollback()
+        raise RuntimeError(
+            f"Silver COPY failed for {source_table}: "
+            f"{consumer_error}"
+        ) from consumer_error
+
+    if producer_errors:
+        silver_conn.rollback()
+        producer_error = producer_errors[0]
+        raise RuntimeError(
+            f"Bronze COPY failed for {source_table}: "
+            f"{producer_error}"
+        ) from producer_error
+
+    print(
+        f"[{source_table}] Streaming COPY completed in "
+        f"{elapsed_seconds:.2f} seconds"
+    )
 
 
 def validate_unique_key(
@@ -2210,6 +2303,9 @@ def synchronize_temp_to_target_with_flag(
 
     try:
         with silver_conn.cursor() as cur:
+            update_started = time.monotonic()
+            print(f"[{target_table}] Starting native UPDATE comparison.")
+
             if non_key_columns:
                 set_clause = sql.SQL(", ").join(
                     [
@@ -2283,6 +2379,15 @@ def synchronize_temp_to_target_with_flag(
                 )
                 updated_rows = cur.rowcount
 
+            print(
+                f"[{target_table}] Native UPDATE completed in "
+                f"{time.monotonic() - update_started:.2f} seconds; "
+                f"rows={updated_rows}."
+            )
+
+            insert_started = time.monotonic()
+            print(f"[{target_table}] Starting missing-key INSERT.")
+
             cur.execute(
                 sql.SQL(
                     """
@@ -2308,6 +2413,15 @@ def synchronize_temp_to_target_with_flag(
                 )
             )
             inserted_rows = cur.rowcount
+
+            print(
+                f"[{target_table}] Missing-key INSERT completed in "
+                f"{time.monotonic() - insert_started:.2f} seconds; "
+                f"rows={inserted_rows}."
+            )
+
+            inactive_started = time.monotonic()
+            print(f"[{target_table}] Starting inactive-flag update.")
 
             reverse_key_match = sql.SQL(" AND ").join(
                 sql.SQL("b.{} = s.{}").format(
@@ -2351,6 +2465,12 @@ def synchronize_temp_to_target_with_flag(
                 )
             )
             inactive_rows = cur.rowcount
+
+            print(
+                f"[{target_table}] Inactive-flag update completed in "
+                f"{time.monotonic() - inactive_started:.2f} seconds; "
+                f"rows={inactive_rows}."
+            )
 
         silver_conn.commit()
 
@@ -2430,14 +2550,15 @@ def prepare_temp_table_for_sync(
     primary_keys,
 ):
     """
-    Create a TEMP-table index on the key and collect statistics.
-
-    This speeds up UPDATE, NOT EXISTS insert, and soft-delete comparisons.
+    Create a TEMP-table key index and collect optimizer statistics.
     """
     if not primary_keys:
         return
 
+    started = time.monotonic()
     index_name = f"idx_{temp_table}_pk"[:63]
+
+    print(f"[{temp_table}] Creating TEMP key index.")
 
     with silver_conn.cursor() as cur:
         cur.execute(
@@ -2458,6 +2579,11 @@ def prepare_temp_table_for_sync(
             )
 
     silver_conn.commit()
+
+    print(
+        f"[{temp_table}] TEMP preparation completed in "
+        f"{time.monotonic() - started:.2f} seconds."
+    )
 
 
 def drop_temp_table(silver_conn, temp_table):
@@ -2932,7 +3058,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 9 NATIVE-COMPARE MULTI-SCHEMA")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 10 STREAMING MULTI-SCHEMA")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -2950,6 +3076,7 @@ def main():
         print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
         print(f"Exact counts       : {ENABLE_EXACT_COUNTS}")
         print(f"Analyze TEMP       : {ANALYZE_TEMP_TABLE}")
+        print(f"COPY pipe buffer   : {COPY_PIPE_BUFFER_BYTES}")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
