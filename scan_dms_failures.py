@@ -91,9 +91,8 @@ from psycopg2 import sql
 #   --EXCLUDE_TABLES table3,table4
 #
 # AUTO strategy:
-#   Keyed table + empty Silver    -> INITIAL_INSERT
-#   Keyed table + populated Silver -> INSERT_MISSING
-#   Table has no PK               -> FULL_REFRESH
+#   Timestamp/date column found -> ROLLING_WINDOW_REPLACE
+#   No timestamp/date column    -> NO_TIMESTAMP_STRATEGY
 ###############################################################################
 
 ###############################################################################
@@ -300,8 +299,9 @@ TIMESTAMP_COLUMN_CANDIDATES = [
     for value in get_runtime_parameter(
         "TIMESTAMP_COLUMN_CANDIDATES",
         default=(
-            "updated_at,modified_at,last_update_date,update_timestamp,"
-            "ingested_at,create_date,created_at,timestamp"
+            "TIME_STAMP,TIMESTAMP,UPDATED_AT,UPDATE_TIMESTAMP,"
+            "MODIFIED_AT,MODIFIED_DATE,LAST_UPDATED_AT,LAST_UPDATE_DATE,"
+            "INGESTED_AT,CREATED_AT,CREATE_DATE"
         ),
     ).split(",")
     if value.strip()
@@ -413,6 +413,7 @@ def create_framework_tables(silver_conn):
                     enabled                boolean NOT NULL DEFAULT true,
                     skip_reason           text,
                     primary_key_override   text,
+                    timestamp_column       varchar(255),
                     load_strategy          varchar(30) NOT NULL DEFAULT 'AUTO',
                     load_order             integer NOT NULL DEFAULT 100,
                     created_datetime       timestamptz NOT NULL
@@ -442,6 +443,15 @@ def create_framework_tables(silver_conn):
                 """
                 ALTER TABLE {}.etl_table_config
                 ADD COLUMN IF NOT EXISTS skip_reason text
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.etl_table_config
+                ADD COLUMN IF NOT EXISTS timestamp_column varchar(255)
                 """
             ).format(sql.Identifier(CONTROL_SCHEMA))
         )
@@ -786,6 +796,7 @@ def get_table_config(
                     enabled,
                     skip_reason,
                     primary_key_override,
+                    timestamp_column,
                     load_strategy,
                     load_order
                 FROM {}.etl_table_config
@@ -802,8 +813,9 @@ def get_table_config(
                 "enabled": row[2],
                 "skip_reason": row[3],
                 "primary_key_override": row[4],
-                "load_strategy": row[5],
-                "load_order": row[6],
+                "timestamp_column": row[5],
+                "load_strategy": row[6],
+                "load_order": row[7],
             }
             for row in cur.fetchall()
         }
@@ -860,6 +872,11 @@ def build_table_jobs(bronze_conn, silver_conn):
                 ),
                 "primary_key_override": (
                     config["primary_key_override"]
+                    if config
+                    else None
+                ),
+                "timestamp_column": (
+                    config["timestamp_column"]
                     if config
                     else None
                 ),
@@ -2010,26 +2027,79 @@ def copy_bronze_to_temp(
     )
 
 
-def find_incremental_timestamp_column(source_columns):
+def find_incremental_timestamp_column(
+    source_columns,
+    configured_timestamp_column=None,
+):
+    """
+    Detect a usable DATE/TIMESTAMP column case-insensitively.
+
+    Priority:
+      1. etl_table_config.timestamp_column
+      2. TIMESTAMP_COLUMN_CANDIDATES Glue parameter
+      3. Built-in defaults
+
+    get_table_columns() returns the PostgreSQL datatype in column["type"].
+    """
     source_map = {
-        column["name"].lower(): column
+        str(column["name"]).strip().upper(): column
         for column in source_columns
     }
 
-    for candidate in TIMESTAMP_COLUMN_CANDIDATES:
-        column = source_map.get(candidate.lower())
+    candidates = []
+
+    if configured_timestamp_column:
+        candidates.append(configured_timestamp_column)
+
+    candidates.extend(TIMESTAMP_COLUMN_CANDIDATES)
+    candidates.extend(
+        [
+            "TIME_STAMP",
+            "TIMESTAMP",
+            "UPDATED_AT",
+            "UPDATE_TIMESTAMP",
+            "MODIFIED_AT",
+            "MODIFIED_DATE",
+            "LAST_UPDATED_AT",
+            "LAST_UPDATE_DATE",
+            "INGESTED_AT",
+            "CREATED_AT",
+            "CREATE_DATE",
+        ]
+    )
+
+    seen = set()
+
+    for candidate in candidates:
+        normalized_candidate = (
+            str(candidate)
+            .strip()
+            .strip('"')
+            .strip("'")
+            .upper()
+        )
+
+        if not normalized_candidate or normalized_candidate in seen:
+            continue
+
+        seen.add(normalized_candidate)
+        column = source_map.get(normalized_candidate)
+
         if not column:
             continue
 
-        data_type = str(column.get("data_type", "")).lower()
-        udt_name = str(column.get("udt_name", "")).lower()
+        postgres_type = normalize_type(str(column.get("type", "")))
 
         if (
-            "timestamp" in data_type
-            or data_type == "date"
-            or udt_name in {"timestamp", "timestamptz", "date"}
+            postgres_type == "date"
+            or postgres_type.startswith("timestamp")
         ):
             return column["name"]
+
+        print(
+            f"[TIMESTAMP] Ignoring candidate {column['name']} because "
+            f"its PostgreSQL datatype is {column.get('type')}."
+        )
 
     return None
 
@@ -3092,6 +3162,7 @@ def process_table(
     source_table,
     target_table,
     primary_key_override=None,
+    configured_timestamp_column=None,
     load_strategy="AUTO",
     enabled=True,
     skip_reason=None,
@@ -3187,8 +3258,22 @@ def process_table(
                 source_table,
             )
 
+        timestamp_column = find_incremental_timestamp_column(
+            source_columns,
+            configured_timestamp_column=configured_timestamp_column,
+        )
+
         if requested_load_strategy == "AUTO":
-            load_strategy = "ROLLING_WINDOW_REPLACE"
+            load_strategy = (
+                "ROLLING_WINDOW_REPLACE"
+                if timestamp_column
+                else NO_TIMESTAMP_STRATEGY
+            )
+        elif (
+            requested_load_strategy == "ROLLING_WINDOW_REPLACE"
+            and not timestamp_column
+        ):
+            load_strategy = NO_TIMESTAMP_STRATEGY
         else:
             load_strategy = requested_load_strategy
 
@@ -3203,6 +3288,12 @@ def process_table(
         if load_strategy not in {"UPSERT", "SYNC_WITH_FLAG"}:
             # ROLLING_WINDOW_REPLACE, FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
+
+        print(
+            f"[{source_table}] configured_timestamp="
+            f"{configured_timestamp_column or 'NONE'}, "
+            f"detected_timestamp={timestamp_column or 'NONE'}"
+        )
 
         print(
             f"[{source_table}] requested_strategy={requested_load_strategy}, "
@@ -3286,10 +3377,6 @@ def process_table(
         )
 
         if load_strategy == "ROLLING_WINDOW_REPLACE":
-            timestamp_column = find_incremental_timestamp_column(
-                source_columns
-            )
-
             if not timestamp_column:
                 atomic_snapshot_replace_target_from_bronze(
                     bronze_conn,
@@ -3610,7 +3697,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 16 CONFIG-DRIVEN SKIPS")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 17 TIMESTAMP DETECTION FIX")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -3661,6 +3748,7 @@ def main():
                 table_job["source_table"],
                 table_job["target_table"],
                 table_job["primary_key_override"],
+                table_job["timestamp_column"],
                 table_job["load_strategy"],
                 table_job["enabled"],
                 table_job["skip_reason"],
