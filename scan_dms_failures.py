@@ -22,7 +22,7 @@
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
 #   9. Stream PostgreSQL COPY directly from Bronze to Silver TEMP storage.
-#  10. Support atomic SNAPSHOT_REPLACE plus legacy sync strategies.
+#  10. Support fast rolling-window replacement plus legacy strategies.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
 #  13. Store datatype issues in the schema-review table.
@@ -34,7 +34,7 @@
 #   - Never automatically apply risky or narrowing datatype changes.
 #   - Never alter a datatype while dependent database objects exist.
 #   - Always record a final control-table entry for every attempted table.
-#   - AUTO selects atomic SNAPSHOT_REPLACE for exact Bronze-to-Silver matching.
+#   - AUTO uses a rolling window when a timestamp exists; otherwise it performs atomic snapshot replacement.
 #
 ###############################################################################
 
@@ -84,6 +84,9 @@ from psycopg2 import sql
 #   --ENABLE_EXACT_COUNTS false
 #   --ANALYZE_TEMP_TABLE true
 #   --COPY_PIPE_BUFFER_BYTES 1048576
+#   --LOOKBACK_DAYS 5
+#   --TIMESTAMP_COLUMN_CANDIDATES updated_at,modified_at,last_update_date,update_timestamp,ingested_at,create_date,created_at,timestamp
+#   --NO_TIMESTAMP_STRATEGY SNAPSHOT_REPLACE
 #   --INCLUDE_TABLES table1,table2
 #   --EXCLUDE_TABLES table3,table4
 #
@@ -285,6 +288,39 @@ if COPY_PIPE_BUFFER_BYTES < 8192:
         "COPY_PIPE_BUFFER_BYTES must be at least 8192."
     )
 
+LOOKBACK_DAYS = int(
+    get_runtime_parameter("LOOKBACK_DAYS", default="5")
+)
+
+if LOOKBACK_DAYS < 1:
+    raise ValueError("LOOKBACK_DAYS must be at least 1.")
+
+TIMESTAMP_COLUMN_CANDIDATES = [
+    value.strip()
+    for value in get_runtime_parameter(
+        "TIMESTAMP_COLUMN_CANDIDATES",
+        default=(
+            "updated_at,modified_at,last_update_date,update_timestamp,"
+            "ingested_at,create_date,created_at,timestamp"
+        ),
+    ).split(",")
+    if value.strip()
+]
+
+NO_TIMESTAMP_STRATEGY = get_runtime_parameter(
+    "NO_TIMESTAMP_STRATEGY",
+    default="SNAPSHOT_REPLACE",
+).strip().upper()
+
+if NO_TIMESTAMP_STRATEGY not in {
+    "SNAPSHOT_REPLACE",
+    "FULL_REFRESH",
+}:
+    raise ValueError(
+        "NO_TIMESTAMP_STRATEGY must be SNAPSHOT_REPLACE "
+        "or FULL_REFRESH."
+    )
+
 RUN_ID = uuid.uuid4().hex
 
 # Optional comma-separated controls.
@@ -341,7 +377,7 @@ def connect_silver():
 # The following tables are created in the Silver control schema:
 #
 # etl_table_config
-#   Optional metadata table used to enable/disable tables, set execution order,
+#   Optional metadata table used to enable/disable tables with a reason, set execution order,
 #   rename targets, and provide primary-key overrides.
 #
 # etl_load_control
@@ -375,6 +411,7 @@ def create_framework_tables(silver_conn):
                     target_schema          varchar(255) NOT NULL,
                     target_table           varchar(255) NOT NULL,
                     enabled                boolean NOT NULL DEFAULT true,
+                    skip_reason           text,
                     primary_key_override   text,
                     load_strategy          varchar(30) NOT NULL DEFAULT 'AUTO',
                     load_order             integer NOT NULL DEFAULT 100,
@@ -388,14 +425,23 @@ def create_framework_tables(silver_conn):
             ).format(sql.Identifier(CONTROL_SCHEMA))
         )
 
-        # Add load_strategy to existing configuration tables created by
-        # an earlier version of the framework.
+        # Add newer metadata columns to configuration tables created by
+        # an earlier framework version.
         cur.execute(
             sql.SQL(
                 """
                 ALTER TABLE {}.etl_table_config
                 ADD COLUMN IF NOT EXISTS load_strategy varchar(30)
                 NOT NULL DEFAULT 'AUTO'
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.etl_table_config
+                ADD COLUMN IF NOT EXISTS skip_reason text
                 """
             ).format(sql.Identifier(CONTROL_SCHEMA))
         )
@@ -738,6 +784,7 @@ def get_table_config(
                     source_table,
                     target_table,
                     enabled,
+                    skip_reason,
                     primary_key_override,
                     load_strategy,
                     load_order
@@ -753,9 +800,10 @@ def get_table_config(
             row[0]: {
                 "target_table": row[1],
                 "enabled": row[2],
-                "primary_key_override": row[3],
-                "load_strategy": row[4],
-                "load_order": row[5],
+                "skip_reason": row[3],
+                "primary_key_override": row[4],
+                "load_strategy": row[5],
+                "load_order": row[6],
             }
             for row in cur.fetchall()
         }
@@ -788,11 +836,6 @@ def build_table_jobs(bronze_conn, silver_conn):
     for source_table in discovered_tables:
         config = table_config.get(source_table)
 
-        # A disabled metadata row explicitly excludes the table.
-        if config and not config["enabled"]:
-            print(f"Skipping excluded table {SOURCE_SCHEMA}.{source_table}")
-            continue
-
         target_table = (
             config["target_table"]
             if config and config["target_table"]
@@ -805,6 +848,16 @@ def build_table_jobs(bronze_conn, silver_conn):
                 "source_table": source_table,
                 "target_schema": TARGET_SCHEMA,
                 "target_table": target_table,
+                "enabled": (
+                    bool(config["enabled"])
+                    if config
+                    else True
+                ),
+                "skip_reason": (
+                    config["skip_reason"]
+                    if config
+                    else None
+                ),
                 "primary_key_override": (
                     config["primary_key_override"]
                     if config
@@ -1957,7 +2010,44 @@ def copy_bronze_to_temp(
     )
 
 
-def snapshot_replace_target_from_bronze(
+def find_incremental_timestamp_column(source_columns):
+    source_map = {
+        column["name"].lower(): column
+        for column in source_columns
+    }
+
+    for candidate in TIMESTAMP_COLUMN_CANDIDATES:
+        column = source_map.get(candidate.lower())
+        if not column:
+            continue
+
+        data_type = str(column.get("data_type", "")).lower()
+        udt_name = str(column.get("udt_name", "")).lower()
+
+        if (
+            "timestamp" in data_type
+            or data_type == "date"
+            or udt_name in {"timestamp", "timestamptz", "date"}
+        ):
+            return column["name"]
+
+    return None
+
+
+def target_is_empty(silver_conn, target_table):
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT EXISTS (SELECT 1 FROM {}.{} LIMIT 1)"
+            ).format(
+                sql.Identifier(TARGET_SCHEMA),
+                sql.Identifier(target_table),
+            )
+        )
+        return not bool(cur.fetchone()[0])
+
+
+def atomic_snapshot_replace_target_from_bronze(
     bronze_conn,
     silver_conn,
     source_table,
@@ -1965,23 +2055,18 @@ def snapshot_replace_target_from_bronze(
     source_columns,
 ):
     """
-    Exact and atomic Bronze-to-Silver snapshot replacement.
+    Exact fallback for tables that do not have a usable timestamp column.
 
-    Silver processing:
-      1. Start transaction.
-      2. TRUNCATE the existing Silver target.
-      3. Stream the complete Bronze table directly into Silver.
-      4. Set the Silver-only active flag to Y for every source row.
-      5. Commit only after the complete COPY succeeds.
-
-    If COPY fails, the Silver transaction is rolled back and the previous
-    committed Silver snapshot remains intact.
-
-    This preserves the existing Silver table object, indexes, grants, views,
-    materialized-view dependencies, and ownership.
+    The existing Silver table is preserved:
+      - TRUNCATE inside a transaction.
+      - Stream the complete Bronze table into Silver.
+      - Commit only after the complete COPY succeeds.
+      - Roll back to the previous Silver snapshot on failure.
     """
-    source_select_columns = sql.SQL(", ").join(
-        sql.SQL("src.{}").format(sql.Identifier(column["name"]))
+    source_columns_sql = sql.SQL(", ").join(
+        sql.SQL("src.{}").format(
+            sql.Identifier(column["name"])
+        )
         for column in source_columns
     )
 
@@ -2005,14 +2090,14 @@ def snapshot_replace_target_from_bronze(
         )
         """
     ).format(
-        source_select_columns,
+        source_columns_sql,
         sql.Literal(ACTIVE_FLAG_Y),
         sql.Identifier(ACTIVE_FLAG_COLUMN),
         sql.Identifier(SOURCE_SCHEMA),
         sql.Identifier(source_table),
     )
 
-    target_columns = sql.SQL(", ").join(
+    target_columns_sql = sql.SQL(", ").join(
         [sql.Identifier(column["name"]) for column in source_columns]
         + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
     )
@@ -2033,14 +2118,14 @@ def snapshot_replace_target_from_bronze(
     ).format(
         sql.Identifier(TARGET_SCHEMA),
         sql.Identifier(target_table),
-        target_columns,
+        target_columns_sql,
     )
 
     read_fd, write_fd = os.pipe()
     producer_errors = []
     started = time.monotonic()
 
-    def bronze_copy_producer():
+    def producer():
         try:
             with os.fdopen(
                 write_fd,
@@ -2062,13 +2147,16 @@ def snapshot_replace_target_from_bronze(
                 pass
 
     producer_thread = threading.Thread(
-        target=bronze_copy_producer,
+        target=producer,
         name=f"snapshot-copy-{source_table}",
         daemon=True,
     )
 
     try:
-        print(f"[{source_table}] Starting atomic SNAPSHOT_REPLACE.")
+        print(
+            f"[{source_table}] No timestamp column found; "
+            f"starting atomic SNAPSHOT_REPLACE."
+        )
 
         with silver_conn.cursor() as silver_cur:
             silver_cur.execute(
@@ -2105,23 +2193,233 @@ def snapshot_replace_target_from_bronze(
 
         if consumer_error is not None:
             raise RuntimeError(
-                f"Silver snapshot COPY failed for {source_table}: "
-                f"{consumer_error}"
+                f"Silver snapshot COPY failed for "
+                f"{source_table}: {consumer_error}"
             ) from consumer_error
 
         if producer_errors:
             producer_error = producer_errors[0]
             raise RuntimeError(
-                f"Bronze snapshot COPY failed for {source_table}: "
-                f"{producer_error}"
+                f"Bronze snapshot COPY failed for "
+                f"{source_table}: {producer_error}"
             ) from producer_error
 
         silver_conn.commit()
 
-        elapsed = time.monotonic() - started
         print(
             f"[{source_table}] SNAPSHOT_REPLACE completed in "
-            f"{elapsed:.2f} seconds."
+            f"{time.monotonic() - started:.2f} seconds."
+        )
+
+    except Exception:
+        silver_conn.rollback()
+        raise
+
+
+def rolling_window_replace_target_from_bronze(
+    bronze_conn,
+    silver_conn,
+    source_table,
+    target_table,
+    source_columns,
+    timestamp_column,
+):
+    """
+    Initial load:
+      - If Silver is empty, stream the complete Bronze table.
+
+    Daily load:
+      - Delete only Silver rows from the configured lookback window.
+      - Stream only Bronze rows from the same lookback window.
+      - Commit atomically.
+    """
+    initial_load = target_is_empty(
+        silver_conn,
+        target_table,
+    )
+
+    if initial_load:
+        source_filter = sql.SQL("TRUE")
+        mode_name = "INITIAL_FULL_LOAD"
+    else:
+        source_filter = sql.SQL(
+            "{} >= CURRENT_TIMESTAMP - ({} * INTERVAL '1 day')"
+        ).format(
+            sql.Identifier(timestamp_column),
+            sql.Literal(LOOKBACK_DAYS),
+        )
+        mode_name = "ROLLING_WINDOW_REPLACE"
+
+    source_columns_sql = sql.SQL(", ").join(
+        sql.SQL("src.{}").format(
+            sql.Identifier(column["name"])
+        )
+        for column in source_columns
+    )
+
+    source_copy = sql.SQL(
+        """
+        COPY
+        (
+            SELECT
+                {},
+                {} AS {}
+            FROM {}.{} src
+            WHERE {}
+        )
+        TO STDOUT
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        source_columns_sql,
+        sql.Literal(ACTIVE_FLAG_Y),
+        sql.Identifier(ACTIVE_FLAG_COLUMN),
+        sql.Identifier(SOURCE_SCHEMA),
+        sql.Identifier(source_table),
+        source_filter,
+    )
+
+    target_columns_sql = sql.SQL(", ").join(
+        [sql.Identifier(column["name"]) for column in source_columns]
+        + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
+    )
+
+    target_copy = sql.SQL(
+        """
+        COPY {}.{} ({})
+        FROM STDIN
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        sql.Identifier(TARGET_SCHEMA),
+        sql.Identifier(target_table),
+        target_columns_sql,
+    )
+
+    read_fd, write_fd = os.pipe()
+    producer_errors = []
+    started = time.monotonic()
+
+    def producer():
+        try:
+            with os.fdopen(
+                write_fd,
+                mode="w",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_writer:
+                with bronze_conn.cursor() as bronze_cur:
+                    bronze_cur.copy_expert(
+                        source_copy.as_string(bronze_conn),
+                        pipe_writer,
+                    )
+        except BaseException as exc:
+            producer_errors.append(exc)
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    producer_thread = threading.Thread(
+        target=producer,
+        name=f"rolling-copy-{source_table}",
+        daemon=True,
+    )
+
+    try:
+        print(
+            f"[{source_table}] Starting {mode_name}; "
+            f"timestamp_column={timestamp_column}; "
+            f"lookback_days={LOOKBACK_DAYS}."
+        )
+
+        with silver_conn.cursor() as silver_cur:
+            if initial_load:
+                silver_cur.execute(
+                    sql.SQL("TRUNCATE TABLE {}.{}").format(
+                        sql.Identifier(TARGET_SCHEMA),
+                        sql.Identifier(target_table),
+                    )
+                )
+            else:
+                silver_cur.execute(
+                    sql.SQL(
+                        """
+                        DELETE FROM {}.{}
+                        WHERE {} >= CURRENT_TIMESTAMP
+                            - ({} * INTERVAL '1 day')
+                        """
+                    ).format(
+                        sql.Identifier(TARGET_SCHEMA),
+                        sql.Identifier(target_table),
+                        sql.Identifier(timestamp_column),
+                        sql.Literal(LOOKBACK_DAYS),
+                    )
+                )
+                print(
+                    f"[{source_table}] Deleted "
+                    f"{silver_cur.rowcount} rows from the "
+                    f"{LOOKBACK_DAYS}-day Silver window."
+                )
+
+        producer_thread.start()
+
+        consumer_error = None
+        try:
+            with os.fdopen(
+                read_fd,
+                mode="r",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_reader:
+                with silver_conn.cursor() as silver_cur:
+                    silver_cur.copy_expert(
+                        target_copy.as_string(silver_conn),
+                        pipe_reader,
+                    )
+        except BaseException as exc:
+            consumer_error = exc
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+        finally:
+            producer_thread.join()
+
+        if consumer_error is not None:
+            raise RuntimeError(
+                f"Silver rolling-window COPY failed for "
+                f"{source_table}: {consumer_error}"
+            ) from consumer_error
+
+        if producer_errors:
+            producer_error = producer_errors[0]
+            raise RuntimeError(
+                f"Bronze rolling-window COPY failed for "
+                f"{source_table}: {producer_error}"
+            ) from producer_error
+
+        silver_conn.commit()
+
+        print(
+            f"[{source_table}] {mode_name} completed in "
+            f"{time.monotonic() - started:.2f} seconds."
         )
 
     except Exception:
@@ -2795,6 +3093,8 @@ def process_table(
     target_table,
     primary_key_override=None,
     load_strategy="AUTO",
+    enabled=True,
+    skip_reason=None,
 ):
     start_datetime = datetime.now(timezone.utc)
 
@@ -2806,6 +3106,39 @@ def process_table(
     error_count = 0
     message = None
     temp_table = None
+
+    # Config-driven skip. Do not query Bronze/Silver counts for skipped tables,
+    # because the skipped tables may be extremely large.
+    if not enabled:
+        status = "SKIPPED"
+        end_datetime = datetime.now(timezone.utc)
+        message = (
+            f"Table disabled in {CONTROL_SCHEMA}.etl_table_config."
+        )
+
+        if skip_reason:
+            message += f" Reason: {skip_reason}"
+
+        print("=" * 80)
+        print(
+            f"Skipping {SOURCE_SCHEMA}.{source_table}: {message}"
+        )
+
+        write_control_record(
+            silver_conn,
+            source_table,
+            target_table,
+            bronze_count,
+            silver_count,
+            rows_processed,
+            status,
+            schema_review_required,
+            start_datetime,
+            end_datetime,
+            error_count,
+            message,
+        )
+        return
 
     try:
         print("=" * 80)
@@ -2820,7 +3153,7 @@ def process_table(
 
         if requested_load_strategy not in {
             "AUTO",
-            "SNAPSHOT_REPLACE",
+            "ROLLING_WINDOW_REPLACE",
             "SYNC_WITH_FLAG",
             "UPSERT",
             "FULL_REFRESH",
@@ -2828,7 +3161,7 @@ def process_table(
         }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "AUTO, SNAPSHOT_REPLACE, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
+                "AUTO, ROLLING_WINDOW_REPLACE, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
                 f"Received={requested_load_strategy}"
             )
 
@@ -2855,7 +3188,7 @@ def process_table(
             )
 
         if requested_load_strategy == "AUTO":
-            load_strategy = "SNAPSHOT_REPLACE"
+            load_strategy = "ROLLING_WINDOW_REPLACE"
         else:
             load_strategy = requested_load_strategy
 
@@ -2868,7 +3201,7 @@ def process_table(
             )
 
         if load_strategy not in {"UPSERT", "SYNC_WITH_FLAG"}:
-            # SNAPSHOT_REPLACE, FULL_REFRESH and APPEND do not require a key.
+            # ROLLING_WINDOW_REPLACE, FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
 
         print(
@@ -2952,13 +3285,41 @@ def process_table(
             target_table,
         )
 
-        if load_strategy == "SNAPSHOT_REPLACE":
-            snapshot_replace_target_from_bronze(
+        if load_strategy == "ROLLING_WINDOW_REPLACE":
+            timestamp_column = find_incremental_timestamp_column(
+                source_columns
+            )
+
+            if not timestamp_column:
+                atomic_snapshot_replace_target_from_bronze(
+                    bronze_conn,
+                    silver_conn,
+                    source_table,
+                    target_table,
+                    source_columns,
+                )
+
+                rows_processed = bronze_count
+                silver_count = get_audit_row_count(
+                    silver_conn,
+                    TARGET_SCHEMA,
+                    target_table,
+                )
+                status = "SUCCESS"
+                message = (
+                    "No timestamp column found. The timestamp filter was "
+                    "ignored and the complete Bronze table was atomically "
+                    "loaded into Silver."
+                )
+                return
+
+            rolling_window_replace_target_from_bronze(
                 bronze_conn,
                 silver_conn,
                 source_table,
                 target_table,
                 source_columns,
+                timestamp_column,
             )
 
             rows_processed = bronze_count
@@ -2969,8 +3330,8 @@ def process_table(
             )
             status = "SUCCESS"
             message = (
-                "Silver target atomically replaced with the complete "
-                "Bronze snapshot."
+                f"Silver refreshed from Bronze for the last "
+                f"{LOOKBACK_DAYS} days using {timestamp_column}."
             )
             return
 
@@ -3249,7 +3610,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 12 EXACT SNAPSHOT MULTI-SCHEMA")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 16 CONFIG-DRIVEN SKIPS")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -3268,6 +3629,9 @@ def main():
         print(f"Exact counts       : {ENABLE_EXACT_COUNTS}")
         print(f"Analyze TEMP       : {ANALYZE_TEMP_TABLE}")
         print(f"COPY pipe buffer   : {COPY_PIPE_BUFFER_BYTES}")
+        print(f"Lookback days      : {LOOKBACK_DAYS}")
+        print(f"Timestamp columns  : {TIMESTAMP_COLUMN_CANDIDATES}")
+        print(f"No timestamp mode  : {NO_TIMESTAMP_STRATEGY}")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
@@ -3298,6 +3662,8 @@ def main():
                 table_job["target_table"],
                 table_job["primary_key_override"],
                 table_job["load_strategy"],
+                table_job["enabled"],
+                table_job["skip_reason"],
             )
 
         print(f"Framework run {RUN_ID} completed.")
