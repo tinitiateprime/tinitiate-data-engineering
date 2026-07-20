@@ -4366,3 +4366,28 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+INSERT INTO etl_control.etl_schema_config
+(
+    source_schema,
+    target_schema,
+    enabled,
+    skip_reason,
+    schema_load_order,
+    default_load_strategy
+)
+VALUES
+    ('CLM',  'CLM',  true, NULL, 10, 'AUTO'),
+    ('HRIS', 'HRIS', true, NULL, 20, 'AUTO'),
+    ('OS',   'OS',   true, NULL, 30, 'AUTO'),
+    ('TE',   'TE',   true, NULL, 40, 'AUTO'),
+    ('CP',   'CP',   true, NULL, 50, 'AUTO')
+ON CONFLICT (source_schema, target_schema)
+DO UPDATE SET
+    enabled = EXCLUDED.enabled,
+    skip_reason = EXCLUDED.skip_reason,
+    schema_load_order = EXCLUDED.schema_load_order,
+    default_load_strategy = EXCLUDED.default_load_strategy,
+    updated_datetime = CURRENT_TIMESTAMP;
