@@ -22,7 +22,7 @@
 #   7. Check for dependent views and materialized views before changing types.
 #   8. Use PostgreSQL TEMP tables instead of permanent staging tables.
 #   9. Stream PostgreSQL COPY directly from Bronze to Silver TEMP storage.
-#  10. Support INITIAL_INSERT, INSERT_MISSING, UPSERT, FULL_REFRESH and APPEND.
+#  10. Support atomic SNAPSHOT_REPLACE plus legacy sync strategies.
 #  11. Store daily source/target counts in the load-control table.
 #  12. Store processing failures in the error table.
 #  13. Store datatype issues in the schema-review table.
@@ -34,7 +34,7 @@
 #   - Never automatically apply risky or narrowing datatype changes.
 #   - Never alter a datatype while dependent database objects exist.
 #   - Always record a final control-table entry for every attempted table.
-#   - AUTO selects INITIAL_INSERT/INSERT_MISSING for keyed tables and FULL_REFRESH for no-key tables.
+#   - AUTO selects atomic SNAPSHOT_REPLACE for exact Bronze-to-Silver matching.
 #
 ###############################################################################
 
@@ -74,7 +74,7 @@ from psycopg2 import sql
 #   --CONTROL_SCHEMA
 #
 # Processing parameters:
-#   --DEFAULT_LOAD_STRATEGY AUTO
+#   --DEFAULT_LOAD_STRATEGY SNAPSHOT_REPLACE
 #   --ACTIVE_FLAG_COLUMN bronze_record_active_flg
 #   --ACTIVE_FLAG_Y Y
 #   --ACTIVE_FLAG_N N
@@ -1957,6 +1957,178 @@ def copy_bronze_to_temp(
     )
 
 
+def snapshot_replace_target_from_bronze(
+    bronze_conn,
+    silver_conn,
+    source_table,
+    target_table,
+    source_columns,
+):
+    """
+    Exact and atomic Bronze-to-Silver snapshot replacement.
+
+    Silver processing:
+      1. Start transaction.
+      2. TRUNCATE the existing Silver target.
+      3. Stream the complete Bronze table directly into Silver.
+      4. Set the Silver-only active flag to Y for every source row.
+      5. Commit only after the complete COPY succeeds.
+
+    If COPY fails, the Silver transaction is rolled back and the previous
+    committed Silver snapshot remains intact.
+
+    This preserves the existing Silver table object, indexes, grants, views,
+    materialized-view dependencies, and ownership.
+    """
+    source_select_columns = sql.SQL(", ").join(
+        sql.SQL("src.{}").format(sql.Identifier(column["name"]))
+        for column in source_columns
+    )
+
+    source_copy = sql.SQL(
+        """
+        COPY
+        (
+            SELECT
+                {},
+                {} AS {}
+            FROM {}.{} src
+        )
+        TO STDOUT
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        source_select_columns,
+        sql.Literal(ACTIVE_FLAG_Y),
+        sql.Identifier(ACTIVE_FLAG_COLUMN),
+        sql.Identifier(SOURCE_SCHEMA),
+        sql.Identifier(source_table),
+    )
+
+    target_columns = sql.SQL(", ").join(
+        [sql.Identifier(column["name"]) for column in source_columns]
+        + [sql.Identifier(ACTIVE_FLAG_COLUMN)]
+    )
+
+    target_copy = sql.SQL(
+        """
+        COPY {}.{} ({})
+        FROM STDIN
+        WITH
+        (
+            FORMAT CSV,
+            HEADER FALSE,
+            NULL '\\N',
+            QUOTE '"',
+            ESCAPE '"'
+        )
+        """
+    ).format(
+        sql.Identifier(TARGET_SCHEMA),
+        sql.Identifier(target_table),
+        target_columns,
+    )
+
+    read_fd, write_fd = os.pipe()
+    producer_errors = []
+    started = time.monotonic()
+
+    def bronze_copy_producer():
+        try:
+            with os.fdopen(
+                write_fd,
+                mode="w",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_writer:
+                with bronze_conn.cursor() as bronze_cur:
+                    bronze_cur.copy_expert(
+                        source_copy.as_string(bronze_conn),
+                        pipe_writer,
+                    )
+        except BaseException as exc:
+            producer_errors.append(exc)
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+
+    producer_thread = threading.Thread(
+        target=bronze_copy_producer,
+        name=f"snapshot-copy-{source_table}",
+        daemon=True,
+    )
+
+    try:
+        print(f"[{source_table}] Starting atomic SNAPSHOT_REPLACE.")
+
+        with silver_conn.cursor() as silver_cur:
+            silver_cur.execute(
+                sql.SQL("TRUNCATE TABLE {}.{}").format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                )
+            )
+
+        producer_thread.start()
+
+        consumer_error = None
+        try:
+            with os.fdopen(
+                read_fd,
+                mode="r",
+                buffering=COPY_PIPE_BUFFER_BYTES,
+                encoding="utf-8",
+                newline="",
+            ) as pipe_reader:
+                with silver_conn.cursor() as silver_cur:
+                    silver_cur.copy_expert(
+                        target_copy.as_string(silver_conn),
+                        pipe_reader,
+                    )
+        except BaseException as exc:
+            consumer_error = exc
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+        finally:
+            producer_thread.join()
+
+        if consumer_error is not None:
+            raise RuntimeError(
+                f"Silver snapshot COPY failed for {source_table}: "
+                f"{consumer_error}"
+            ) from consumer_error
+
+        if producer_errors:
+            producer_error = producer_errors[0]
+            raise RuntimeError(
+                f"Bronze snapshot COPY failed for {source_table}: "
+                f"{producer_error}"
+            ) from producer_error
+
+        silver_conn.commit()
+
+        elapsed = time.monotonic() - started
+        print(
+            f"[{source_table}] SNAPSHOT_REPLACE completed in "
+            f"{elapsed:.2f} seconds."
+        )
+
+    except Exception:
+        silver_conn.rollback()
+        raise
+
+
 def validate_unique_key(
     bronze_conn,
     source_table,
@@ -2648,6 +2820,7 @@ def process_table(
 
         if requested_load_strategy not in {
             "AUTO",
+            "SNAPSHOT_REPLACE",
             "SYNC_WITH_FLAG",
             "UPSERT",
             "FULL_REFRESH",
@@ -2655,7 +2828,7 @@ def process_table(
         }:
             raise RuntimeError(
                 "Unsupported load_strategy. Expected one of: "
-                "AUTO, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
+                "AUTO, SNAPSHOT_REPLACE, SYNC_WITH_FLAG, UPSERT, FULL_REFRESH, APPEND. "
                 f"Received={requested_load_strategy}"
             )
 
@@ -2682,11 +2855,7 @@ def process_table(
             )
 
         if requested_load_strategy == "AUTO":
-            load_strategy = (
-                "SYNC_WITH_FLAG"
-                if primary_keys
-                else "FULL_REFRESH"
-            )
+            load_strategy = "SNAPSHOT_REPLACE"
         else:
             load_strategy = requested_load_strategy
 
@@ -2699,7 +2868,7 @@ def process_table(
             )
 
         if load_strategy not in {"UPSERT", "SYNC_WITH_FLAG"}:
-            # FULL_REFRESH and APPEND do not require a key.
+            # SNAPSHOT_REPLACE, FULL_REFRESH and APPEND do not require a key.
             primary_keys = []
 
         print(
@@ -2782,6 +2951,28 @@ def process_table(
             TARGET_SCHEMA,
             target_table,
         )
+
+        if load_strategy == "SNAPSHOT_REPLACE":
+            snapshot_replace_target_from_bronze(
+                bronze_conn,
+                silver_conn,
+                source_table,
+                target_table,
+                source_columns,
+            )
+
+            rows_processed = bronze_count
+            silver_count = get_audit_row_count(
+                silver_conn,
+                TARGET_SCHEMA,
+                target_table,
+            )
+            status = "SUCCESS"
+            message = (
+                "Silver target atomically replaced with the complete "
+                "Bronze snapshot."
+            )
+            return
 
         # Small tables run once. Large keyed tables automatically process all
         # buckets in one Glue execution; no daily parameter changes are needed.
@@ -3058,7 +3249,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 10 STREAMING MULTI-SCHEMA")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 12 EXACT SNAPSHOT MULTI-SCHEMA")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
