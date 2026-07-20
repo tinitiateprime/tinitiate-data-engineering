@@ -81,6 +81,8 @@ from psycopg2 import sql
 #   --BUCKET_COUNT 16
 #   --BUCKET_ROW_THRESHOLD 1000000
 #   --VALIDATE_KEY_OVERRIDE false
+#   --ENABLE_EXACT_COUNTS false
+#   --ANALYZE_TEMP_TABLE true
 #   --INCLUDE_TABLES table1,table2
 #   --EXCLUDE_TABLES table3,table4
 #
@@ -253,6 +255,20 @@ if BUCKET_ROW_THRESHOLD < 0:
 
 VALIDATE_KEY_OVERRIDE = (
     get_runtime_parameter("VALIDATE_KEY_OVERRIDE", default="false")
+    .strip()
+    .lower()
+    in {"1", "true", "t", "yes", "y"}
+)
+
+ENABLE_EXACT_COUNTS = (
+    get_runtime_parameter("ENABLE_EXACT_COUNTS", default="false")
+    .strip()
+    .lower()
+    in {"1", "true", "t", "yes", "y"}
+)
+
+ANALYZE_TEMP_TABLE = (
+    get_runtime_parameter("ANALYZE_TEMP_TABLE", default="true")
     .strip()
     .lower()
     in {"1", "true", "t", "yes", "y"}
@@ -888,6 +904,7 @@ def get_primary_keys(conn, schema_name, table_name):
 
 
 def get_row_count(conn, schema_name, table_name):
+    """Return an exact row count. This can scan the complete table."""
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
@@ -896,6 +913,38 @@ def get_row_count(conn, schema_name, table_name):
             )
         )
         return cur.fetchone()[0]
+
+
+def get_estimated_row_count(conn, schema_name, table_name):
+    """Return PostgreSQL's estimated live-row count without COUNT(*)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(
+                stats.n_live_tup,
+                class.reltuples::bigint,
+                0
+            )::bigint
+            FROM pg_catalog.pg_class class
+            JOIN pg_catalog.pg_namespace namespace
+              ON namespace.oid = class.relnamespace
+            LEFT JOIN pg_catalog.pg_stat_user_tables stats
+              ON stats.relid = class.oid
+            WHERE namespace.nspname = %s
+              AND class.relname = %s
+              AND class.relkind IN ('r', 'p')
+            """,
+            (schema_name, table_name),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+
+def get_audit_row_count(conn, schema_name, table_name):
+    if ENABLE_EXACT_COUNTS:
+        return get_row_count(conn, schema_name, table_name)
+
+    return get_estimated_row_count(conn, schema_name, table_name)
 
 
 ###############################################################################
@@ -1781,7 +1830,12 @@ def copy_bronze_to_temp(
         (
             SELECT
                 {},
-                md5(to_jsonb(src)::text) AS {}
+                md5(
+                    concat_ws(
+                        E'\\x1F',
+                        {}
+                    )
+                ) AS {}
             FROM {}.{} src
             WHERE {}
         )
@@ -1797,6 +1851,12 @@ def copy_bronze_to_temp(
         """
     ).format(
         source_select_columns,
+        sql.SQL(", ").join(
+            sql.SQL("COALESCE(src.{}::text, '<NULL>')").format(
+                sql.Identifier(column["name"])
+            )
+            for column in source_columns
+        ),
         sql.Identifier(ROW_HASH_COLUMN),
         sql.Identifier(SOURCE_SCHEMA),
         sql.Identifier(source_table),
@@ -2374,6 +2434,42 @@ def merge_temp_to_target(
     return affected_rows
 
 
+def prepare_temp_table_for_sync(
+    silver_conn,
+    temp_table,
+    primary_keys,
+):
+    """
+    Create a TEMP-table index on the key and collect statistics.
+
+    This speeds up UPDATE, NOT EXISTS insert, and soft-delete comparisons.
+    """
+    if not primary_keys:
+        return
+
+    index_name = f"idx_{temp_table}_pk"[:63]
+
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("CREATE INDEX {} ON {} ({})").format(
+                sql.Identifier(index_name),
+                sql.Identifier(temp_table),
+                sql.SQL(", ").join(
+                    sql.Identifier(column) for column in primary_keys
+                ),
+            )
+        )
+
+        if ANALYZE_TEMP_TABLE:
+            cur.execute(
+                sql.SQL("ANALYZE {}").format(
+                    sql.Identifier(temp_table)
+                )
+            )
+
+    silver_conn.commit()
+
+
 def drop_temp_table(silver_conn, temp_table):
     with silver_conn.cursor() as cur:
         cur.execute(
@@ -2522,7 +2618,7 @@ def process_table(
                 primary_keys,
             )
 
-        bronze_count = get_row_count(
+        bronze_count = get_audit_row_count(
             bronze_conn,
             SOURCE_SCHEMA,
             source_table,
@@ -2547,7 +2643,7 @@ def process_table(
                 TARGET_SCHEMA,
                 target_table,
             ):
-                silver_count = get_row_count(
+                silver_count = get_audit_row_count(
                     silver_conn,
                     TARGET_SCHEMA,
                     target_table,
@@ -2565,7 +2661,7 @@ def process_table(
                 primary_keys,
             )
 
-        target_count_before_load = get_row_count(
+        target_count_before_load = get_audit_row_count(
             silver_conn,
             TARGET_SCHEMA,
             target_table,
@@ -2620,10 +2716,16 @@ def process_table(
                     current_bucket_id,
                 )
 
+                prepare_temp_table_for_sync(
+                    silver_conn,
+                    temp_table,
+                    primary_keys,
+                )
+
                 # Only a genuinely empty target on a non-bucketed run uses the
                 # initial plain insert. For bucketed initial loads, bucket 0 uses
                 # plain insert and later buckets use synchronization.
-                current_target_count = get_row_count(
+                current_target_count = get_audit_row_count(
                     silver_conn,
                     TARGET_SCHEMA,
                     target_table,
@@ -2727,7 +2829,7 @@ def process_table(
                 "marked_inactive": total_inactive,
             }
 
-        silver_count = get_row_count(
+        silver_count = get_audit_row_count(
             silver_conn,
             TARGET_SCHEMA,
             target_table,
@@ -2767,7 +2869,7 @@ def process_table(
                 TARGET_SCHEMA,
                 target_table,
             ):
-                silver_count = get_row_count(
+                silver_count = get_audit_row_count(
                     silver_conn,
                     TARGET_SCHEMA,
                     target_table,
@@ -2840,7 +2942,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 7 AUTO-BUCKET SNAPSHOT SYNC")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 8 FAST HASH SYNC")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -2857,6 +2959,8 @@ def main():
         print(f"Maximum buckets    : {BUCKET_COUNT}")
         print(f"Bucket threshold   : {BUCKET_ROW_THRESHOLD}")
         print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
+        print(f"Exact counts       : {ENABLE_EXACT_COUNTS}")
+        print(f"Analyze TEMP       : {ANALYZE_TEMP_TABLE}")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
