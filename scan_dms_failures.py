@@ -2973,79 +2973,94 @@ def ensure_target_unique_constraint(
     primary_keys,
 ):
     """
-    ON CONFLICT requires a matching PRIMARY KEY or UNIQUE constraint.
+    Ensure Silver has a PRIMARY KEY or UNIQUE constraint matching the merge key.
 
-    The unique-key comparison uses a comma-separated text value instead of
-    PostgreSQL arrays. This avoids name[] versus text[] datatype errors while
-    preserving the exact order of composite-key columns.
-
-    For existing Silver tables, create a UNIQUE constraint when the configured
-    business key is valid but is not already enforced in Silver.
+    This implementation avoids PostgreSQL array comparisons completely.
+    Existing constraint columns and the expected key are compared as one
+    comma-separated TEXT value in the same column order.
     """
     if not primary_keys:
         return
 
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXISTS
-            (
-                SELECT 1
-                FROM pg_catalog.pg_index i
-                JOIN pg_catalog.pg_class c
-                  ON c.oid = i.indrelid
-                JOIN pg_catalog.pg_namespace n
-                  ON n.oid = c.relnamespace
-                WHERE n.nspname = %s
-                  AND c.relname = %s
-                  AND i.indisunique
-                  AND
-                  (
-                      SELECT string_agg(
-                          a.attname::text,
-                          ',' ORDER BY keys.ord
-                      )
-                      FROM unnest(i.indkey) WITH ORDINALITY
-                           AS keys(attnum, ord)
-                      JOIN pg_catalog.pg_attribute a
-                        ON a.attrelid = c.oid
-                       AND a.attnum = keys.attnum
-                  ) = %s
-            )
-            """,
-            (
-                TARGET_SCHEMA,
-                target_table,
-                ",".join(primary_keys),
-            ),
-        )
+    expected_key_text = ",".join(
+        str(column).strip()
+        for column in primary_keys
+    )
 
-        constraint_exists = cur.fetchone()[0]
-
-        if constraint_exists:
-            return
-
-        constraint_name = (
-            f"uq_{target_table}_{'_'.join(primary_keys)}"
-        )[:63]
-
-        cur.execute(
-            sql.SQL(
+    try:
+        with silver_conn.cursor() as cur:
+            cur.execute(
                 """
-                ALTER TABLE {}.{}
-                ADD CONSTRAINT {} UNIQUE ({})
-                """
-            ).format(
-                sql.Identifier(TARGET_SCHEMA),
-                sql.Identifier(target_table),
-                sql.Identifier(constraint_name),
-                sql.SQL(", ").join(
-                    sql.Identifier(column) for column in primary_keys
+                SELECT EXISTS
+                (
+                    SELECT 1
+                    FROM
+                    (
+                        SELECT
+                            tc.constraint_name,
+                            string_agg(
+                                kcu.column_name::text,
+                                ',' ORDER BY kcu.ordinal_position
+                            ) AS constraint_columns
+                        FROM information_schema.table_constraints tc
+                        JOIN information_schema.key_column_usage kcu
+                          ON kcu.constraint_catalog = tc.constraint_catalog
+                         AND kcu.constraint_schema = tc.constraint_schema
+                         AND kcu.constraint_name = tc.constraint_name
+                         AND kcu.table_schema = tc.table_schema
+                         AND kcu.table_name = tc.table_name
+                        WHERE tc.table_schema = %s
+                          AND tc.table_name = %s
+                          AND tc.constraint_type IN
+                              ('PRIMARY KEY', 'UNIQUE')
+                        GROUP BY tc.constraint_name
+                    ) existing_constraints
+                    WHERE constraint_columns = %s
+                )
+                """,
+                (
+                    TARGET_SCHEMA,
+                    target_table,
+                    expected_key_text,
                 ),
             )
-        )
 
-    silver_conn.commit()
+            constraint_exists = bool(cur.fetchone()[0])
+
+            if constraint_exists:
+                return
+
+            constraint_name = (
+                f"uq_{target_table}_{'_'.join(primary_keys)}"
+            )[:63]
+
+            print(
+                f"[{target_table}] No matching unique constraint found. "
+                f"Creating {constraint_name} on {primary_keys}."
+            )
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    ALTER TABLE {}.{}
+                    ADD CONSTRAINT {} UNIQUE ({})
+                    """
+                ).format(
+                    sql.Identifier(TARGET_SCHEMA),
+                    sql.Identifier(target_table),
+                    sql.Identifier(constraint_name),
+                    sql.SQL(", ").join(
+                        sql.Identifier(column)
+                        for column in primary_keys
+                    ),
+                )
+            )
+
+        silver_conn.commit()
+
+    except Exception:
+        silver_conn.rollback()
+        raise
 
 
 def full_refresh_temp_to_target(
@@ -4224,7 +4239,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 20 TABLE-DRIVEN ALL SCHEMAS")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 21 CONSTRAINT + ERROR FIX")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -4243,6 +4258,7 @@ def main():
         print(f"COPY pipe buffer   : {COPY_PIPE_BUFFER_BYTES}")
         print(f"Timestamp columns  : {TIMESTAMP_COLUMN_CANDIDATES}")
         print(f"No timestamp mode  : {NO_TIMESTAMP_STRATEGY}")
+        print("Constraint check   : TEXT aggregation; no array comparison")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
@@ -4366,28 +4382,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-INSERT INTO etl_control.etl_schema_config
-(
-    source_schema,
-    target_schema,
-    enabled,
-    skip_reason,
-    schema_load_order,
-    default_load_strategy
-)
-VALUES
-    ('CLM',  'CLM',  true, NULL, 10, 'AUTO'),
-    ('HRIS', 'HRIS', true, NULL, 20, 'AUTO'),
-    ('OS',   'OS',   true, NULL, 30, 'AUTO'),
-    ('TE',   'TE',   true, NULL, 40, 'AUTO'),
-    ('CP',   'CP',   true, NULL, 50, 'AUTO')
-ON CONFLICT (source_schema, target_schema)
-DO UPDATE SET
-    enabled = EXCLUDED.enabled,
-    skip_reason = EXCLUDED.skip_reason,
-    schema_load_order = EXCLUDED.schema_load_order,
-    default_load_strategy = EXCLUDED.default_load_strategy,
-    updated_datetime = CURRENT_TIMESTAMP;
