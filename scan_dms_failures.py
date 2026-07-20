@@ -404,6 +404,28 @@ def create_framework_tables(silver_conn):
         cur.execute(
             sql.SQL(
                 """
+                CREATE TABLE IF NOT EXISTS {}.etl_schema_config
+                (
+                    schema_config_id        bigserial PRIMARY KEY,
+                    source_schema           varchar(255) NOT NULL,
+                    target_schema           varchar(255) NOT NULL,
+                    enabled                 boolean NOT NULL DEFAULT true,
+                    skip_reason             text,
+                    schema_load_order       integer NOT NULL DEFAULT 100,
+                    default_load_strategy   varchar(30) NOT NULL DEFAULT 'AUTO',
+                    created_datetime        timestamptz NOT NULL
+                                            DEFAULT CURRENT_TIMESTAMP,
+                    updated_datetime        timestamptz NOT NULL
+                                            DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (source_schema, target_schema)
+                )
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
                 CREATE TABLE IF NOT EXISTS {}.etl_table_config
                 (
                     config_id              bigserial PRIMARY KEY,
@@ -568,6 +590,36 @@ def create_framework_tables(silver_conn):
 #   Writes the final table-level execution result to etl_load_control.
 ###############################################################################
 
+def format_database_exception(exc):
+    """
+    Preserve the original PostgreSQL error instead of recording only the
+    follow-on 'current transaction is aborted' message.
+    """
+    parts = [f"{type(exc).__name__}: {exc}"]
+
+    pgcode = getattr(exc, "pgcode", None)
+    if pgcode:
+        parts.append(f"sqlstate={pgcode}")
+
+    diag = getattr(exc, "diag", None)
+    if diag:
+        fields = [
+            ("severity", getattr(diag, "severity", None)),
+            ("message_primary", getattr(diag, "message_primary", None)),
+            ("message_detail", getattr(diag, "message_detail", None)),
+            ("message_hint", getattr(diag, "message_hint", None)),
+            ("constraint_name", getattr(diag, "constraint_name", None)),
+            ("table_name", getattr(diag, "table_name", None)),
+            ("column_name", getattr(diag, "column_name", None)),
+        ]
+
+        for name, value in fields:
+            if value:
+                parts.append(f"{name}={value}")
+
+    return " | ".join(parts)
+
+
 def log_error(
     silver_conn,
     source_table,
@@ -580,8 +632,20 @@ def log_error(
     source_datatype=None,
     target_datatype=None,
 ):
+    """
+    Write technical errors through an independent connection.
+
+    The load connection may be in PostgreSQL's aborted-transaction state after
+    a statement fails. Using a separate connection prevents the real error from
+    being replaced by:
+      current transaction is aborted, commands ignored...
+    """
+    audit_conn = None
+
     try:
-        with silver_conn.cursor() as cur:
+        audit_conn = connect_silver()
+
+        with audit_conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     """
@@ -622,10 +686,21 @@ def log_error(
                     error_detail,
                 ),
             )
-        silver_conn.commit()
+
+        audit_conn.commit()
+
     except Exception as audit_error:
-        silver_conn.rollback()
-        print(f"WARNING: Error-table insert failed: {audit_error}")
+        if audit_conn is not None:
+            audit_conn.rollback()
+
+        print(
+            "WARNING: Error-table insert failed independently: "
+            f"{format_database_exception(audit_error)}"
+        )
+
+    finally:
+        if audit_conn is not None:
+            audit_conn.close()
 
 
 def log_schema_review(
@@ -690,17 +765,50 @@ def write_control_record(
     error_count,
     message,
 ):
-    with silver_conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                """
-                INSERT INTO {}.etl_load_control
+    """
+    Write the final table result through an independent connection.
+
+    This guarantees that one failed load transaction cannot contaminate the
+    status records for the current or following tables.
+    """
+    audit_conn = None
+
+    try:
+        audit_conn = connect_silver()
+
+        with audit_conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {}.etl_load_control
+                    (
+                        run_id,
+                        job_name,
+                        source_schema,
+                        source_table,
+                        target_schema,
+                        target_table,
+                        bronze_count,
+                        silver_count,
+                        rows_processed,
+                        status,
+                        schema_review_required,
+                        start_datetime,
+                        end_datetime,
+                        error_count,
+                        message
+                    )
+                    VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s, %s, %s)
+                    """
+                ).format(sql.Identifier(CONTROL_SCHEMA)),
                 (
-                    run_id,
-                    job_name,
-                    source_schema,
+                    RUN_ID,
+                    JOB_NAME,
+                    SOURCE_SCHEMA,
                     source_table,
-                    target_schema,
+                    TARGET_SCHEMA,
                     target_table,
                     bronze_count,
                     silver_count,
@@ -710,32 +818,25 @@ def write_control_record(
                     start_datetime,
                     end_datetime,
                     error_count,
-                    message
-                )
-                VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s, %s, %s)
-                """
-            ).format(sql.Identifier(CONTROL_SCHEMA)),
-            (
-                RUN_ID,
-                JOB_NAME,
-                SOURCE_SCHEMA,
-                source_table,
-                TARGET_SCHEMA,
-                target_table,
-                bronze_count,
-                silver_count,
-                rows_processed,
-                status,
-                schema_review_required,
-                start_datetime,
-                end_datetime,
-                error_count,
-                message,
-            ),
+                    message,
+                ),
+            )
+
+        audit_conn.commit()
+
+    except Exception as audit_error:
+        if audit_conn is not None:
+            audit_conn.rollback()
+
+        print(
+            f"CRITICAL: Unable to write control status for {source_table}: "
+            f"{format_database_exception(audit_error)}"
         )
-    silver_conn.commit()
+        raise
+
+    finally:
+        if audit_conn is not None:
+            audit_conn.close()
 
 
 ###############################################################################
@@ -772,6 +873,68 @@ def discover_source_tables(bronze_conn):
         tables = [table for table in tables if table not in EXCLUDE_TABLES]
 
     return tables
+
+
+def get_schema_mappings(silver_conn):
+    """
+    Return every enabled Bronze-to-Silver schema mapping in execution order.
+
+    The Glue job no longer needs SOURCE_SCHEMA/TARGET_SCHEMA changed for each
+    run. One scheduled run processes every enabled row in etl_schema_config.
+
+    Backward-compatible fallback:
+      If etl_schema_config has no rows, process the SOURCE_SCHEMA and
+      TARGET_SCHEMA Glue parameters once.
+    """
+    with silver_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                    source_schema,
+                    target_schema,
+                    enabled,
+                    skip_reason,
+                    schema_load_order,
+                    default_load_strategy
+                FROM {}.etl_schema_config
+                ORDER BY schema_load_order, source_schema, target_schema
+                """
+            ).format(sql.Identifier(CONTROL_SCHEMA))
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        print(
+            f"No rows found in {CONTROL_SCHEMA}.etl_schema_config. "
+            f"Using fallback mapping {SOURCE_SCHEMA} -> {TARGET_SCHEMA}."
+        )
+        return [
+            {
+                "source_schema": SOURCE_SCHEMA,
+                "target_schema": TARGET_SCHEMA,
+                "enabled": True,
+                "skip_reason": None,
+                "schema_load_order": 100,
+                "default_load_strategy": DEFAULT_LOAD_STRATEGY,
+            }
+        ]
+
+    return [
+        {
+            "source_schema": row[0],
+            "target_schema": row[1],
+            "enabled": bool(row[2]),
+            "skip_reason": row[3],
+            "schema_load_order": row[4],
+            "default_load_strategy": (
+                str(row[5]).strip().upper()
+                if row[5]
+                else DEFAULT_LOAD_STRATEGY
+            ),
+        }
+        for row in rows
+    ]
 
 
 def get_table_config(
@@ -822,28 +985,29 @@ def get_table_config(
         }
 
 
-def build_table_jobs(bronze_conn, silver_conn):
+def build_table_jobs(
+    bronze_conn,
+    silver_conn,
+    source_schema,
+    target_schema,
+    schema_default_strategy,
+):
     """
-    Build the ordered work list for the single configured schema.
-
-    The schema mapping is controlled only by:
-      SOURCE_SCHEMA -> TARGET_SCHEMA
-
-    A job contains:
-      source_schema
-      source_table
-      target_schema
-      target_table
-      primary_key_override
-      load_order
+    Discover all source tables for one enabled schema mapping and overlay any
+    table-level configuration from etl_table_config.
     """
+    global SOURCE_SCHEMA, TARGET_SCHEMA
+
+    SOURCE_SCHEMA = source_schema
+    TARGET_SCHEMA = target_schema
+
     table_jobs = []
 
     discovered_tables = discover_source_tables(bronze_conn)
     table_config = get_table_config(
         silver_conn,
-        SOURCE_SCHEMA,
-        TARGET_SCHEMA,
+        source_schema,
+        target_schema,
     )
 
     for source_table in discovered_tables:
@@ -857,9 +1021,9 @@ def build_table_jobs(bronze_conn, silver_conn):
 
         table_jobs.append(
             {
-                "source_schema": SOURCE_SCHEMA,
+                "source_schema": source_schema,
                 "source_table": source_table,
-                "target_schema": TARGET_SCHEMA,
+                "target_schema": target_schema,
                 "target_table": target_table,
                 "enabled": (
                     bool(config["enabled"])
@@ -884,7 +1048,7 @@ def build_table_jobs(bronze_conn, silver_conn):
                 "load_strategy": (
                     str(config["load_strategy"]).strip().upper()
                     if config and config["load_strategy"]
-                    else DEFAULT_LOAD_STRATEGY
+                    else schema_default_strategy
                 ),
                 "table_load_order": (
                     config["load_order"]
@@ -3409,6 +3573,13 @@ def process_table(
     message = None
     temp_table = None
 
+    # Ensure a previous table cannot leave this shared connection in an
+    # aborted transaction state.
+    try:
+        silver_conn.rollback()
+    except Exception:
+        pass
+
     # Config-driven skip. Do not query Bronze/Silver counts for skipped tables,
     # because the skipped tables may be extremely large.
     if not enabled:
@@ -3927,19 +4098,35 @@ def process_table(
             message = f"Table loaded successfully using {actual_strategy} strategy."
 
     except Exception as exc:
-        silver_conn.rollback()
+        original_traceback = traceback.format_exc()
+        original_error = format_database_exception(exc)
+
+        # Roll back immediately before performing any metadata query, cleanup,
+        # error logging, or processing of the next table.
+        try:
+            silver_conn.rollback()
+        except Exception as rollback_error:
+            original_error += (
+                " | rollback_error="
+                + format_database_exception(rollback_error)
+            )
+
         status = "FAILED"
         error_count += 1
-        message = str(exc)
+        message = original_error
+
+        print(
+            f"[{source_table}] GENUINE FAILURE: {original_error}"
+        )
 
         log_error(
             silver_conn,
             source_table,
             target_table,
             "PROCESS_TABLE",
-            str(exc),
+            original_error,
             severity="ERROR",
-            error_detail=traceback.format_exc(),
+            error_detail=original_traceback,
         )
 
         try:
@@ -3957,6 +4144,13 @@ def process_table(
             silver_conn.rollback()
 
     finally:
+        # PostgreSQL rejects every statement after a failure until rollback.
+        # Always clear the transaction before cleanup.
+        try:
+            silver_conn.rollback()
+        except Exception:
+            pass
+
         if temp_table:
             try:
                 drop_temp_table(silver_conn, temp_table)
@@ -3967,15 +4161,22 @@ def process_table(
                 if status == "SUCCESS":
                     status = "PARTIAL_SUCCESS"
 
+                cleanup_message = format_database_exception(cleanup_error)
+
                 log_error(
                     silver_conn,
                     source_table,
                     target_table,
                     "DROP_TEMP_TABLE",
-                    str(cleanup_error),
+                    cleanup_message,
                     severity="WARNING",
                     error_detail=traceback.format_exc(),
                 )
+
+                if message:
+                    message += f" | cleanup_error={cleanup_message}"
+                else:
+                    message = f"cleanup_error={cleanup_message}"
 
         end_datetime = datetime.now(timezone.utc)
 
@@ -4016,31 +4217,30 @@ def process_table(
 ###############################################################################
 
 def main():
+    global SOURCE_SCHEMA, TARGET_SCHEMA, DEFAULT_LOAD_STRATEGY
+
     bronze_conn = None
     silver_conn = None
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 18 CURRENT-DAY MERGE")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 20 TABLE-DRIVEN ALL SCHEMAS")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
         print(f"Bronze login       : {BRONZE_USER}")
         print(f"Silver host/database: {SILVER_HOST}/{SILVER_DB}")
         print(f"Silver login       : {SILVER_USER}")
-        print(f"Source schema      : {SOURCE_SCHEMA}")
-        print(f"Target schema      : {TARGET_SCHEMA}")
         print(f"Control schema     : {CONTROL_SCHEMA}")
-        print(f"Default strategy   : {DEFAULT_LOAD_STRATEGY}")
+        print(f"Fallback source    : {SOURCE_SCHEMA}")
+        print(f"Fallback target    : {TARGET_SCHEMA}")
+        print(f"Fallback strategy  : {DEFAULT_LOAD_STRATEGY}")
         print(f"Active flag column : {ACTIVE_FLAG_COLUMN}")
         print(f"Active/Inactive    : {ACTIVE_FLAG_Y}/{ACTIVE_FLAG_N}")
-        print(f"Maximum buckets    : {BUCKET_COUNT}")
-        print(f"Bucket threshold   : {BUCKET_ROW_THRESHOLD}")
         print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
         print(f"Exact counts       : {ENABLE_EXACT_COUNTS}")
         print(f"Analyze TEMP       : {ANALYZE_TEMP_TABLE}")
         print(f"COPY pipe buffer   : {COPY_PIPE_BUFFER_BYTES}")
-        print(f"Lookback days      : {LOOKBACK_DAYS}")
         print(f"Timestamp columns  : {TIMESTAMP_COLUMN_CANDIDATES}")
         print(f"No timestamp mode  : {NO_TIMESTAMP_STRATEGY}")
         print("Passwords are parameterized and are not logged.")
@@ -4051,37 +4251,108 @@ def main():
 
         create_framework_tables(silver_conn)
 
-        table_jobs = build_table_jobs(
-            bronze_conn,
-            silver_conn,
-        )
+        schema_mappings = get_schema_mappings(silver_conn)
 
-        if not table_jobs:
-            print("No enabled source tables were found.")
-            return
+        enabled_mappings = [
+            mapping
+            for mapping in schema_mappings
+            if mapping["enabled"]
+        ]
 
-        print(
-            f"Starting framework run {RUN_ID}. "
-            f"Tables selected for {SOURCE_SCHEMA} -> {TARGET_SCHEMA}: {len(table_jobs)}"
-        )
+        disabled_mappings = [
+            mapping
+            for mapping in schema_mappings
+            if not mapping["enabled"]
+        ]
 
-        for table_job in table_jobs:
-            process_table(
-                bronze_conn,
-                silver_conn,
-                table_job["source_table"],
-                table_job["target_table"],
-                table_job["primary_key_override"],
-                table_job["timestamp_column"],
-                table_job["load_strategy"],
-                table_job["enabled"],
-                table_job["skip_reason"],
+        for mapping in disabled_mappings:
+            print(
+                f"Skipping schema mapping "
+                f"{mapping['source_schema']} -> {mapping['target_schema']}: "
+                f"{mapping['skip_reason'] or 'disabled in schema config'}"
             )
 
-        print(f"Framework run {RUN_ID} completed.")
+        if not enabled_mappings:
+            print("No enabled schema mappings were found.")
+            return
+
+        total_tables = 0
+
+        for mapping in enabled_mappings:
+            SOURCE_SCHEMA = mapping["source_schema"]
+            TARGET_SCHEMA = mapping["target_schema"]
+            DEFAULT_LOAD_STRATEGY = mapping["default_load_strategy"]
+
+            print("=" * 80)
+            print(
+                f"Starting schema mapping "
+                f"{SOURCE_SCHEMA} -> {TARGET_SCHEMA}; "
+                f"default_strategy={DEFAULT_LOAD_STRATEGY}"
+            )
+            print("=" * 80)
+
+            # Clear any transaction state before starting another schema.
+            try:
+                silver_conn.rollback()
+            except Exception:
+                pass
+
+            table_jobs = build_table_jobs(
+                bronze_conn,
+                silver_conn,
+                SOURCE_SCHEMA,
+                TARGET_SCHEMA,
+                DEFAULT_LOAD_STRATEGY,
+            )
+
+            if not table_jobs:
+                print(
+                    f"No source tables found for "
+                    f"{SOURCE_SCHEMA} -> {TARGET_SCHEMA}."
+                )
+                continue
+
+            print(
+                f"Tables selected for "
+                f"{SOURCE_SCHEMA} -> {TARGET_SCHEMA}: {len(table_jobs)}"
+            )
+
+            for table_job in table_jobs:
+                # Set globals explicitly because existing framework functions
+                # use these values for SQL, audit and error logging.
+                SOURCE_SCHEMA = table_job["source_schema"]
+                TARGET_SCHEMA = table_job["target_schema"]
+
+                process_table(
+                    bronze_conn,
+                    silver_conn,
+                    table_job["source_table"],
+                    table_job["target_table"],
+                    table_job["primary_key_override"],
+                    table_job["timestamp_column"],
+                    table_job["load_strategy"],
+                    table_job["enabled"],
+                    table_job["skip_reason"],
+                )
+
+                total_tables += 1
+
+            print(
+                f"Completed schema mapping "
+                f"{SOURCE_SCHEMA} -> {TARGET_SCHEMA}."
+            )
+
+        print(
+            f"Framework run {RUN_ID} completed. "
+            f"Schema mappings={len(enabled_mappings)}, "
+            f"tables attempted={total_tables}."
+        )
 
     except Exception as framework_error:
-        print(f"Framework-level failure: {framework_error}")
+        print(
+            "Framework-level failure: "
+            f"{format_database_exception(framework_error)}"
+        )
         print(traceback.format_exc())
         raise
 
