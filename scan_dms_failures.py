@@ -3,29 +3,13 @@
 generate_repo_stack.py
 
 Generates the 4-layer file stack (repo -> service -> domain model -> handler)
-for a new materialized view / mat view-backed entity, following the same
-pattern as the existing contract_repo.py / contract_service.py / contract.py /
-contracts handler files.
+for a materialized-view-backed entity, following the contract_repo.py /
+contract_service.py / contract.py / contracts-handler pattern.
 
 USAGE
 -----
-1. Fill in a config dict (see EXAMPLE_CONFIG below for the shape) describing
-   your new view: table name, entity name, columns, id fields, sort fields.
-
-2. Run:
-     python generate_repo_stack.py --config my_view_config.json --outdir ./generated
-
-   or, to see it work immediately with the bundled example:
-     python generate_repo_stack.py --example --outdir ./generated
-
-3. Four files land in --outdir:
-     <entity>_repo.py       (db/repositories layer)
-     <entity>_service.py    (domain/services layer)
-     <entity>_model.py      (domain/models layer)
-     <entity>_handler.py    (v1 route handlers + v1 schemas)
-
-You can also import this module and call `generate(config, outdir)` directly
-from other tooling.
+python generate_repo_stack.py --config my_view_config.json --outdir ./generated
+python generate_repo_stack.py --example --outdir ./generated
 """
 
 from __future__ import annotations
@@ -33,13 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
-# ---------------------------------------------------------------------------
-# Type mapping: your "type" strings -> Python annotation used in the domain
-# model. Extend this if you introduce new column types.
-# ---------------------------------------------------------------------------
 PY_TYPE_MAP = {
     "int": "int",
     "text": "str",
@@ -48,32 +28,16 @@ PY_TYPE_MAP = {
     "bool": "bool",
 }
 
-
-# ---------------------------------------------------------------------------
-# Config validation
-# ---------------------------------------------------------------------------
 REQUIRED_KEYS = [
-    "entity",               # PascalCase singular, e.g. "Project"
-    "entity_snake",         # snake_case singular, e.g. "project"
-    "entity_plural_snake",  # snake_case plural, e.g. "projects"
-    "materialized_view",    # e.g. "gold.project_active_mv"
-    "logical_id_field",     # unique non-nullable field for keyset pagination, e.g. "row_id"
-    "lookup_field",         # business key used in get_by_id, e.g. "project_id"
-    "route_base",           # e.g. "/v1/projects"
-    "columns",              # list of column dicts (see below)
+    "entity",
+    "entity_snake",
+    "entity_plural_snake",
+    "materialized_view",
+    "logical_id_field",
+    "lookup_field",
+    "route_base",
+    "columns",
 ]
-
-# Each column dict:
-# {
-#   "name": "project_id",     # python attr / column_map key (snake_case)
-#   "col": "project_id",      # actual DB column name (usually same as name)
-#   "type": "text",           # one of PY_TYPE_MAP keys
-#   "alias": "projectId",     # camelCase JSON alias for pydantic Field
-#   "required": True,         # whether it's a required field (no default)
-#   "default": None,          # python-literal-as-string default, e.g. '"Y"' or "0"
-#   "sortable": True,         # whether to include in allowed_sort_fields
-#   "selectable": True,       # whether to include in default_select
-# }
 
 
 def _validate_config(config: Dict[str, Any]) -> None:
@@ -93,9 +57,6 @@ def _validate_config(config: Dict[str, Any]) -> None:
             )
 
 
-# ---------------------------------------------------------------------------
-# Repository layer (stage 1)
-# ---------------------------------------------------------------------------
 def render_repo(config: Dict[str, Any]) -> str:
     entity_upper = config["entity"].upper()
     entity_snake = config["entity_snake"]
@@ -109,10 +70,8 @@ def render_repo(config: Dict[str, Any]) -> str:
         f'        "{c["name"]}": {{"col": "{c["col"]}", "type": "{c["type"]}"}}'
         for c in columns
     )
-
     sort_fields = [c["name"] for c in columns if c.get("sortable", True)]
     allowed_sort_lines = ",\n".join(f'        "{f}"' for f in sort_fields)
-
     select_fields = [c["name"] for c in columns if c.get("selectable", True)]
     default_select_lines = ",\n".join(f'        "{f}"' for f in select_fields)
 
@@ -180,7 +139,6 @@ def get_{entity_plural_snake}(
     Retrieves a list of {entity_plural_snake} from the view.
     Handles the POST body JSON containing filters, sort, and page config.
     """
-    # 1. Normalize Inputs
     if isinstance(filters, dict):
         current_filters = FiltersEnvelope(filters=filters)
     else:
@@ -189,7 +147,6 @@ def get_{entity_plural_snake}(
     current_sort = sort or SortModel()
     current_page = page or PaginationModel(limit=config.settings.DEFAULT_PAGE_SIZE)
 
-    # 2. Generate Plan (the builder handles the recursive AND/OR logic)
     plan = _builder.get_list_plan(
         filters=current_filters, sort=current_sort, page=current_page, columns=columns
     )
@@ -211,29 +168,22 @@ def get_{entity_snake}_by_id(
     Fetches records for a specific {lookup_field}.
     Ensures that manual ID filtering is injected into the recursive filter structure.
     """
-    # 1. Extract raw filter dictionary for modification
     if isinstance(filters, FiltersEnvelope):
-        # We need to peek into the 'filters' attribute of the envelope
         current_data = filters.filters
     else:
         current_data = filters or {{}}
 
-    # 2. Inject {lookup_field} filter
     if isinstance(current_data, dict):
-        # Explicitly wrap the dict in a FilterOps instance
         current_data["{lookup_field}"] = FilterOps(eq={lookup_field})
     else:
-        # If the root is a FilterGroup, we append a new FilterRule
         id_rule = FilterRule(field="{lookup_field}", ops=FilterOps(eq={lookup_field}))
         current_data.filters.append(id_rule)
 
     validated_filters = FiltersEnvelope(filters=current_data)
 
-    # 3. Defaults
     current_page = page or PaginationModel(limit=50)
     current_sort = sort or SortModel()
 
-    # 4. Plan & Execute
     plan = _builder.get_list_plan(
         filters=validated_filters, sort=current_sort, page=current_page, columns=columns
     )
@@ -245,9 +195,6 @@ def get_{entity_snake}_by_id(
 '''
 
 
-# ---------------------------------------------------------------------------
-# Service layer (stage 2)
-# ---------------------------------------------------------------------------
 def render_service(config: Dict[str, Any]) -> str:
     entity = config["entity"]
     entity_snake = config["entity_snake"]
@@ -277,11 +224,9 @@ def search_{entity_plural_snake}(
     """
     Orchestrates the transformation of API inputs into domain objects.
     """
-    # 1. Normalize Models (defaults if not provided in POST body)
     current_page = page or PaginationModel(limit=DEFAULT_PAGE_SIZE)
     current_sort = sort or SortModel(field="{default_sort_field}", order="asc")
 
-    # 2. Normalize filters to ensure we have a FiltersEnvelope object
     if isinstance(filters, dict):
         validated_filters = FiltersEnvelope(filters=filters)
     elif filters is None:
@@ -289,17 +234,14 @@ def search_{entity_plural_snake}(
     else:
         validated_filters = filters
 
-    # 3. Call Repository
     db_result = {entity_snake}_repo.get_{entity_plural_snake}(
         filters=validated_filters, sort=current_sort, page=current_page, columns=columns
     )
 
-    # 4. Transform to Domain Objects
     items = [
         {entity}Response.model_validate(item) for item in db_result.get("items", [])
     ]
 
-    # 5. Return Pydantic Model
     return {entity}SearchServiceResponse(
         items=items,
         metadata=MetadataModel(
@@ -318,18 +260,12 @@ def get_{entity_snake}_details(
     columns: Optional[List[str]] = None,
     sort: Optional[SortModel] = None,
 ) -> {entity}SearchServiceResponse:
-    # 1. Early Return for invalid IDs
     if not {lookup_field}:
         return {entity}SearchServiceResponse(
             items=[],
-            metadata=MetadataModel(
-                cursor=None,
-                has_more=False,
-                applied_filters=None,
-            ),
+            metadata=MetadataModel(cursor=None, has_more=False, applied_filters=None),
         )
 
-    # 2. Normalize filters to ensure we have a FiltersEnvelope object
     if isinstance(filters, dict):
         validated_filters = FiltersEnvelope(filters=filters)
     elif filters is None:
@@ -337,10 +273,8 @@ def get_{entity_snake}_details(
     else:
         validated_filters = filters
 
-    # Package the raw limit and cursor into the PaginationModel the repo expects
     page = PaginationModel(limit=limit, cursor=cursor)
 
-    # 3. Call Repo
     db_result = {entity_snake}_repo.get_{entity_snake}_by_id(
         {lookup_field}={lookup_field},
         filters=validated_filters,
@@ -349,12 +283,10 @@ def get_{entity_snake}_details(
         sort=sort,
     )
 
-    # 4. Transform & Validate
     items = [
         {entity}Response.model_validate(item) for item in db_result.get("items", [])
     ]
 
-    # 5. Wrap and Return (ensures consistency with search_{entity_plural_snake})
     return {entity}SearchServiceResponse(
         items=items,
         metadata=MetadataModel(
@@ -366,13 +298,9 @@ def get_{entity_snake}_details(
 '''
 
 
-# ---------------------------------------------------------------------------
-# Domain model layer (stage 3)
-# ---------------------------------------------------------------------------
 def render_model(config: Dict[str, Any]) -> str:
     entity = config["entity"]
     columns = config["columns"]
-
     needs_date = any(c["type"] == "date" for c in columns)
 
     field_lines = []
@@ -431,9 +359,6 @@ class {entity}SearchServiceResponse(BaseModel):
 '''
 
 
-# ---------------------------------------------------------------------------
-# Handler / route layer (stage 4) — includes the v1 schema wrapper models
-# ---------------------------------------------------------------------------
 def render_handler(config: Dict[str, Any]) -> str:
     entity = config["entity"]
     entity_snake = config["entity_snake"]
@@ -473,15 +398,12 @@ from v1.schemas.{entity_snake}s import (
 def get_{entity_snake}_v1(event, context):
     {lookup_field} = LambdaUtils.get_path_param(event, "{lookup_field}")
 
-    # Quick exit: required parameter is missing for this route
     if not {lookup_field}:
         raise ValueError("{entity} ID is required.")
 
     query_params = LambdaUtils.get_all_query_params(event)
-
     limit = int(query_params.get("limit", settings.DEFAULT_PAGE_SIZE))
     cursor = query_params.get("cursor")
-
     columns = LambdaUtils.get_columns_query_parameter(event)
 
     filters_envelope = parse_filters_from_query_params(
@@ -523,7 +445,6 @@ def search_{entity_plural_snake}_v1(event, context):
     filters_data = body.get("filters", {{}})
     sort = SortModel(**body.get("sort", {{}}))
     page = PaginationModel(**body.get("page", {{}}))
-
     columns = LambdaUtils.get_columns_query_parameter(event)
 
     results = search_{entity_plural_snake}(
@@ -567,17 +488,9 @@ def list_{entity_plural_snake}_v1(event, context):
 '''
 
 
-# ---------------------------------------------------------------------------
-# Orchestration
-# ---------------------------------------------------------------------------
 def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
-    """
-    Generates all 4 files for the given config and writes them to outdir.
-    Returns a dict of {filename: filepath} for the files written.
-    """
     _validate_config(config)
     os.makedirs(outdir, exist_ok=True)
-
     entity_snake = config["entity_snake"]
 
     files = {
@@ -597,44 +510,18 @@ def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
     return written
 
 
-# ---------------------------------------------------------------------------
-# Bundled example config (mirrors the "contracts" pattern you already have)
-# ---------------------------------------------------------------------------
-EXAMPLE_CONFIG: Dict[str, Any] = {
-    "entity": "Project",
-    "entity_snake": "project",
-    "entity_plural_snake": "projects",
-    "materialized_view": "gold.project_active_mv",
-    "logical_id_field": "row_id",
-    "lookup_field": "project_id",
-    "default_sort_field": "project_id",
-    "route_base": "/v1/projects",
-    "columns": [
-        {"name": "row_id", "col": "row_id", "type": "int", "alias": "rowId", "required": True, "sortable": True, "selectable": True},
-        {"name": "project_id", "col": "project_id", "type": "text", "alias": "projectId", "required": True, "sortable": True, "selectable": True},
-        {"name": "project_name", "col": "project_name", "type": "text", "alias": "projectName", "required": True, "sortable": True, "selectable": True},
-        {"name": "active_fl", "col": "active_fl", "type": "text", "alias": "activeFl", "required": False, "default": '"Y"', "sortable": False, "selectable": True},
-        {"name": "created_date", "col": "created_date", "type": "date", "alias": "createdDate", "required": False, "sortable": True, "selectable": True},
-        {"name": "total_value", "col": "total_value", "type": "numeric", "alias": "totalValue", "required": False, "sortable": True, "selectable": True},
-    ],
-}
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", help="Path to a JSON config file")
-    parser.add_argument("--example", action="store_true", help="Use the bundled example config instead of --config")
     parser.add_argument("--outdir", default="./generated", help="Directory to write generated files to")
     args = parser.parse_args()
 
-    if args.example:
-        config = EXAMPLE_CONFIG
-    elif args.config:
-        with open(args.config) as f:
-            config = json.load(f)
-    else:
-        parser.error("Provide either --config <file.json> or --example")
+    if not args.config:
+        parser.error("Provide --config <file.json>")
         return
+
+    with open(args.config) as f:
+        config = json.load(f)
 
     written = generate(config, args.outdir)
     print("Generated files:")
@@ -644,80 +531,40 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+project_financials_config.json
 {
-  "_comment_entity": "PascalCase singular name for the entity, e.g. 'Project', 'PurchaseOrder'",
-  "entity": "REPLACE_ME_Entity",
-
-  "_comment_entity_snake": "snake_case singular, e.g. 'project', 'purchase_order'",
-  "entity_snake": "replace_me_entity",
-
-  "_comment_entity_plural_snake": "snake_case plural, e.g. 'projects', 'purchase_orders'",
-  "entity_plural_snake": "replace_me_entities",
-
-  "_comment_materialized_view": "the materialized view name as it appears in the DB, e.g. 'gold.project_active_mv'",
-  "materialized_view": "gold.REPLACE_ME_mv",
-
-  "_comment_logical_id_field": "a unique, non-nullable field used for keyset pagination (usually a surrogate row id)",
-  "logical_id_field": "row_id",
-
-  "_comment_lookup_field": "the business key used for the get-by-id endpoint, e.g. 'project_id'",
-  "lookup_field": "replace_me_id",
-
-  "_comment_default_sort_field": "field used as the default sort when none is provided",
-  "default_sort_field": "replace_me_id",
-
-  "_comment_route_base": "the base API route for this entity, e.g. '/v1/projects'",
-  "route_base": "/v1/replace_me_entities",
-
-  "_comment_columns": "one entry per column exposed via the view. type must be one of: int, text, date, numeric, bool. 'required' controls whether the pydantic Field has a default. 'default' (optional) is a python-literal string, e.g. '\"Y\"' or '0', used only when required=false. 'sortable' controls inclusion in allowed_sort_fields. 'selectable' controls inclusion in default_select.",
+  "entity": "ProjectFinancial",
+  "entity_snake": "project_financial",
+  "entity_plural_snake": "project_financials",
+  "materialized_view": "Project_financials_source_vw",
+  "logical_id_field": "proj_id",
+  "lookup_field": "proj_id",
+  "default_sort_field": "proj_id",
+  "route_base": "/v1/project-financials",
   "columns": [
-    {
-      "name": "row_id",
-      "col": "row_id",
-      "type": "int",
-      "alias": "rowId",
-      "required": true,
-      "sortable": true,
-      "selectable": true
-    },
-    {
-      "name": "replace_me_id",
-      "col": "replace_me_id",
-      "type": "text",
-      "alias": "replaceMeId",
-      "required": true,
-      "sortable": true,
-      "selectable": true
-    },
-    {
-      "name": "replace_me_name",
-      "col": "replace_me_name",
-      "type": "text",
-      "alias": "replaceMeName",
-      "required": true,
-      "sortable": true,
-      "selectable": true
-    },
-    {
-      "name": "active_fl",
-      "col": "active_fl",
-      "type": "text",
-      "alias": "activeFl",
-      "required": false,
-      "default": "\"Y\"",
-      "sortable": false,
-      "selectable": true
-    },
-    {
-      "name": "created_date",
-      "col": "created_date",
-      "type": "date",
-      "alias": "createdDate",
-      "required": false,
-      "sortable": true,
-      "selectable": true
-    }
+    { "name": "proj_id", "col": "proj_id", "type": "text", "alias": "projId", "required": true, "sortable": true, "selectable": true },
+    { "name": "cust_name", "col": "cust_name", "type": "text", "alias": "custName", "required": true, "sortable": true, "selectable": true },
+    { "name": "proj_start_dt", "col": "proj_start_dt", "type": "date", "alias": "projStartDt", "required": false, "sortable": true, "selectable": true },
+    { "name": "proj_end_dt", "col": "proj_end_dt", "type": "date", "alias": "projEndDt", "required": false, "sortable": true, "selectable": true },
+    { "name": "s_proj_rpt_dc", "col": "s_proj_rpt_dc", "type": "text", "alias": "sProjRptDc", "required": false, "sortable": true, "selectable": true },
+    { "name": "proj_name", "col": "proj_name", "type": "text", "alias": "projName", "required": true, "sortable": true, "selectable": true },
+    { "name": "org_id", "col": "org_id", "type": "text", "alias": "orgId", "required": false, "sortable": true, "selectable": true },
+    { "name": "prime_contr_id", "col": "prime_contr_id", "type": "text", "alias": "primeContrId", "required": false, "sortable": true, "selectable": true },
+    { "name": "active_fl", "col": "active_fl", "type": "text", "alias": "activeFl", "required": false, "default": "\"Y\"", "sortable": false, "selectable": true },
+    { "name": "proj_type_dc", "col": "proj_type_dc", "type": "text", "alias": "projTypeDc", "required": false, "sortable": true, "selectable": true },
+    { "name": "proj_mgr_name", "col": "proj_mgr_name", "type": "text", "alias": "projMgrName", "required": false, "sortable": true, "selectable": true },
+    { "name": "lvl_no", "col": "lvl_no", "type": "int", "alias": "lvlNo", "required": false, "sortable": true, "selectable": true },
+    { "name": "value_total_amount", "col": "value_total_amount", "type": "numeric", "alias": "valueTotalAmount", "required": false, "sortable": true, "selectable": true },
+    { "name": "project_value_cost", "col": "project_value_cost", "type": "numeric", "alias": "projectValueCost", "required": false, "sortable": true, "selectable": true },
+    { "name": "project_value_fee", "col": "project_value_fee", "type": "numeric", "alias": "projectValueFee", "required": false, "sortable": true, "selectable": true },
+    { "name": "proj_f_tot_amt", "col": "proj_f_tot_amt", "type": "numeric", "alias": "projFTotAmt", "required": false, "sortable": true, "selectable": true },
+    { "name": "cost_funded", "col": "cost_funded", "type": "numeric", "alias": "costFunded", "required": false, "sortable": true, "selectable": true },
+    { "name": "fee_funded", "col": "fee_funded", "type": "numeric", "alias": "feeFunded", "required": false, "sortable": true, "selectable": true },
+    { "name": "total_billed", "col": "total_billed", "type": "numeric", "alias": "totalBilled", "required": false, "sortable": true, "selectable": true },
+    { "name": "billed_cost", "col": "billed_cost", "type": "numeric", "alias": "billedCost", "required": false, "sortable": true, "selectable": true },
+    { "name": "billed_fee", "col": "billed_fee", "type": "numeric", "alias": "billedFee", "required": false, "sortable": true, "selectable": true },
+    { "name": "open_billing_detail_amt", "col": "open_billing_detail_amt", "type": "numeric", "alias": "openBillingDetailAmt", "required": false, "sortable": true, "selectable": true },
+    { "name": "open_commit_amt", "col": "open_commit_amt", "type": "numeric", "alias": "openCommitAmt", "required": false, "sortable": true, "selectable": true }
   ]
 }
 
