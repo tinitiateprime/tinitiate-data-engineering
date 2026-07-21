@@ -56,7 +56,7 @@ REQUIRED_KEYS = [
     "entity",               # PascalCase singular, e.g. "Project"
     "entity_snake",         # snake_case singular, e.g. "project"
     "entity_plural_snake",  # snake_case plural, e.g. "projects"
-    "table",                # e.g. "gold.project_active_vw"
+    "materialized_view",    # e.g. "gold.project_active_mv"
     "logical_id_field",     # unique non-nullable field for keyset pagination, e.g. "row_id"
     "lookup_field",         # business key used in get_by_id, e.g. "project_id"
     "route_base",           # e.g. "/v1/projects"
@@ -100,7 +100,7 @@ def render_repo(config: Dict[str, Any]) -> str:
     entity_upper = config["entity"].upper()
     entity_snake = config["entity_snake"]
     entity_plural_snake = config["entity_plural_snake"]
-    table = config["table"]
+    materialized_view = config["materialized_view"]
     logical_id_field = config["logical_id_field"]
     lookup_field = config["lookup_field"]
     columns = config["columns"]
@@ -117,7 +117,7 @@ def render_repo(config: Dict[str, Any]) -> str:
     default_select_lines = ",\n".join(f'        "{f}"' for f in select_fields)
 
     return f'''"""
-Auto-generated repository for {table}
+Auto-generated repository for materialized view: {materialized_view}
 """
 from typing import List, Optional, Union
 
@@ -129,8 +129,9 @@ from db.connection import execute_query
 from v1.schemas import FilterOps, FilterRule, FiltersEnvelope, PaginationModel, SortModel
 
 
+# Define the Spec targeting the materialized view
 {entity_upper}_VIEW_SPEC = QuerySpec(
-    table="{table}",
+    table="{materialized_view}",
     column_map={{
 {column_map_lines}
     }},
@@ -603,7 +604,7 @@ EXAMPLE_CONFIG: Dict[str, Any] = {
     "entity": "Project",
     "entity_snake": "project",
     "entity_plural_snake": "projects",
-    "table": "gold.project_active_vw",
+    "materialized_view": "gold.project_active_mv",
     "logical_id_field": "row_id",
     "lookup_field": "project_id",
     "default_sort_field": "project_id",
@@ -643,3 +644,80 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+{
+  "_comment_entity": "PascalCase singular name for the entity, e.g. 'Project', 'PurchaseOrder'",
+  "entity": "REPLACE_ME_Entity",
+
+  "_comment_entity_snake": "snake_case singular, e.g. 'project', 'purchase_order'",
+  "entity_snake": "replace_me_entity",
+
+  "_comment_entity_plural_snake": "snake_case plural, e.g. 'projects', 'purchase_orders'",
+  "entity_plural_snake": "replace_me_entities",
+
+  "_comment_materialized_view": "the materialized view name as it appears in the DB, e.g. 'gold.project_active_mv'",
+  "materialized_view": "gold.REPLACE_ME_mv",
+
+  "_comment_logical_id_field": "a unique, non-nullable field used for keyset pagination (usually a surrogate row id)",
+  "logical_id_field": "row_id",
+
+  "_comment_lookup_field": "the business key used for the get-by-id endpoint, e.g. 'project_id'",
+  "lookup_field": "replace_me_id",
+
+  "_comment_default_sort_field": "field used as the default sort when none is provided",
+  "default_sort_field": "replace_me_id",
+
+  "_comment_route_base": "the base API route for this entity, e.g. '/v1/projects'",
+  "route_base": "/v1/replace_me_entities",
+
+  "_comment_columns": "one entry per column exposed via the view. type must be one of: int, text, date, numeric, bool. 'required' controls whether the pydantic Field has a default. 'default' (optional) is a python-literal string, e.g. '\"Y\"' or '0', used only when required=false. 'sortable' controls inclusion in allowed_sort_fields. 'selectable' controls inclusion in default_select.",
+  "columns": [
+    {
+      "name": "row_id",
+      "col": "row_id",
+      "type": "int",
+      "alias": "rowId",
+      "required": true,
+      "sortable": true,
+      "selectable": true
+    },
+    {
+      "name": "replace_me_id",
+      "col": "replace_me_id",
+      "type": "text",
+      "alias": "replaceMeId",
+      "required": true,
+      "sortable": true,
+      "selectable": true
+    },
+    {
+      "name": "replace_me_name",
+      "col": "replace_me_name",
+      "type": "text",
+      "alias": "replaceMeName",
+      "required": true,
+      "sortable": true,
+      "selectable": true
+    },
+    {
+      "name": "active_fl",
+      "col": "active_fl",
+      "type": "text",
+      "alias": "activeFl",
+      "required": false,
+      "default": "\"Y\"",
+      "sortable": false,
+      "selectable": true
+    },
+    {
+      "name": "created_date",
+      "col": "created_date",
+      "type": "date",
+      "alias": "createdDate",
+      "required": false,
+      "sortable": true,
+      "selectable": true
+    }
+  ]
+}
+
