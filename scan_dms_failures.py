@@ -3817,6 +3817,46 @@ def process_table(
             "CURRENT_DAY_MERGE",
             "CURRENT_DAY_REPLACE",
         }:
+            # Initial-load rule:
+            # If the Silver table exists but contains no records, load the
+            # complete Bronze table. Do not apply the timestamp filter.
+            #
+            # Every later run uses the current-day timestamp slice and merges
+            # it into the already populated Silver table.
+            silver_target_empty = target_is_empty(
+                silver_conn,
+                target_table,
+            )
+
+            if silver_target_empty:
+                print(
+                    f"[{source_table}] Silver target is empty. "
+                    f"Starting INITIAL_FULL_LOAD from the complete Bronze table."
+                )
+
+                atomic_snapshot_replace_target_from_bronze(
+                    bronze_conn,
+                    silver_conn,
+                    source_table,
+                    target_table,
+                    source_columns,
+                )
+
+                rows_processed = bronze_count
+                silver_count = get_audit_row_count(
+                    silver_conn,
+                    TARGET_SCHEMA,
+                    target_table,
+                )
+                status = "SUCCESS"
+                message = (
+                    "Silver target was empty. Loaded the complete Bronze table "
+                    "using INITIAL_FULL_LOAD. Future runs will use "
+                    f"{load_strategy} with {timestamp_column}::date = "
+                    "CURRENT_DATE."
+                )
+                return
+
             temp_table = create_temp_table(
                 silver_conn,
                 source_table,
@@ -4239,7 +4279,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 21 CONSTRAINT + ERROR FIX")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 22 INITIAL FULL THEN DAILY MERGE")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -4259,6 +4299,8 @@ def main():
         print(f"Timestamp columns  : {TIMESTAMP_COLUMN_CANDIDATES}")
         print(f"No timestamp mode  : {NO_TIMESTAMP_STRATEGY}")
         print("Constraint check   : TEXT aggregation; no array comparison")
+        print("Initial-load mode  : Empty Silver = complete Bronze load")
+        print("Daily-load mode    : Populated Silver = current-day merge")
         print("Passwords are parameterized and are not logged.")
         print("=" * 80)
 
