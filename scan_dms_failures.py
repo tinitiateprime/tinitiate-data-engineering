@@ -1,38 +1,62 @@
-UPDATE etl_control.etl_table_config
-SET
-    load_strategy = 'SNAPSHOT_REPLACE',
-    updated_datetime = CURRENT_TIMESTAMP
-WHERE source_schema IN ('CP', 'TE')
-  AND source_table IN
-  (
-      'LAB_HS',
-      'GL_POST_SUM',
-      'GL_DETL',
-      'BILLING_SUM',
-      'BILLING_DETL_HIST',
-      'TS_LINE',
-      'TS_CELL',
-      'TS',
-      'TASK_EMPL',
-      'TASK'
-  );
+INSERT INTO etl_control.etl_table_config
+(
+    source_schema,
+    source_table,
+    target_schema,
+    target_table,
+    enabled,
+    skip_reason,
+    primary_key_override,
+    timestamp_column,
+    load_strategy,
+    load_order,
+    created_datetime,
+    updated_datetime
+)
+SELECT DISTINCT
+    source_schema,
+    source_table,
+    target_schema,
+    target_table,
+    TRUE AS enabled,
+    NULL AS skip_reason,
+    NULL AS primary_key_override,
 
-UPDATE etl_control.etl_table_config
+    CASE
+        WHEN UPPER(source_schema) IN ('CP', 'TE')
+            THEN 'TIME_STAMP'
+        ELSE NULL
+    END AS timestamp_column,
+
+    CASE
+        WHEN UPPER(source_schema) IN ('CP', 'TE')
+            THEN 'AUTO'
+        WHEN UPPER(source_schema) IN ('CLM', 'HRIS', 'OS')
+            THEN 'SNAPSHOT_REPLACE'
+        ELSE 'SNAPSHOT_REPLACE'
+    END AS load_strategy,
+
+    100 AS load_order,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+
+FROM etl_control.etl_load_control
+
+WHERE source_schema IN
+(
+    'CLM',
+    'CP',
+    'HRIS',
+    'OS',
+    'TE'
+)
+
+ON CONFLICT (source_schema, source_table)
+DO UPDATE
 SET
-    timestamp_column = 'TIME_STAMP',
-    load_strategy = 'AUTO',
-    updated_datetime = CURRENT_TIMESTAMP
-WHERE source_schema IN ('CP', 'TE')
-  AND source_table IN
-  (
-      'LAB_HS',
-      'GL_POST_SUM',
-      'GL_DETL',
-      'BILLING_SUM',
-      'BILLING_DETL_HIST',
-      'TS_LINE',
-      'TS_CELL',
-      'TS',
-      'TASK_EMPL',
-      'TASK'
-  );
+    target_schema = EXCLUDED.target_schema,
+    target_table = EXCLUDED.target_table,
+    enabled = EXCLUDED.enabled,
+    timestamp_column = EXCLUDED.timestamp_column,
+    load_strategy = EXCLUDED.load_strategy,
+    updated_datetime = CURRENT_TIMESTAMP;
