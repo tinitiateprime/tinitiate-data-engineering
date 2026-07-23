@@ -5,58 +5,35 @@ INSERT INTO etl_control.etl_table_config
     target_schema,
     target_table,
     enabled,
-    skip_reason,
-    primary_key_override,
-    timestamp_column,
     load_strategy,
-    load_order,
-    created_datetime,
-    updated_datetime
+    timestamp_column,
+    created_datetime
 )
 SELECT DISTINCT
     source_schema,
     source_table,
-    target_schema,
-    target_table,
-    TRUE AS enabled,
-    NULL AS skip_reason,
-    NULL AS primary_key_override,
+    source_schema,
+    source_table,
+    TRUE,
 
     CASE
-        WHEN UPPER(source_schema) IN ('CP', 'TE')
+        WHEN source_schema IN ('CP','TE')
+            THEN 'CURRENT_DAY_MERGE'
+        ELSE 'SNAPSHOT_REPLACE'
+    END,
+
+    CASE
+        WHEN source_schema IN ('CP','TE')
             THEN 'TIME_STAMP'
         ELSE NULL
-    END AS timestamp_column,
+    END,
 
-    CASE
-        WHEN UPPER(source_schema) IN ('CP', 'TE')
-            THEN 'AUTO'
-        WHEN UPPER(source_schema) IN ('CLM', 'HRIS', 'OS')
-            THEN 'SNAPSHOT_REPLACE'
-        ELSE 'SNAPSHOT_REPLACE'
-    END AS load_strategy,
-
-    100 AS load_order,
-    CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP
-
 FROM etl_control.etl_load_control
-
-WHERE source_schema IN
+WHERE NOT EXISTS
 (
-    'CLM',
-    'CP',
-    'HRIS',
-    'OS',
-    'TE'
-)
-
-ON CONFLICT (source_schema, source_table)
-DO UPDATE
-SET
-    target_schema = EXCLUDED.target_schema,
-    target_table = EXCLUDED.target_table,
-    enabled = EXCLUDED.enabled,
-    timestamp_column = EXCLUDED.timestamp_column,
-    load_strategy = EXCLUDED.load_strategy,
-    updated_datetime = CURRENT_TIMESTAMP;
+    SELECT 1
+    FROM etl_control.etl_table_config c
+    WHERE c.source_schema = etl_load_control.source_schema
+      AND c.source_table  = etl_load_control.source_table
+);
