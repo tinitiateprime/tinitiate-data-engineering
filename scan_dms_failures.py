@@ -1,55 +1,70 @@
-INSERT INTO etl_control.etl_table_config
+INSERT INTO etl_control.etl_schema_config
 (
     source_schema,
-    source_table,
     target_schema,
-    target_table,
     enabled,
-    load_strategy,
-    timestamp_column,
+    skip_reason,
+    schema_load_order,
+    default_load_strategy,
     created_datetime,
     updated_datetime
 )
-SELECT DISTINCT
-    source_schema,
-    source_table,
-    target_schema,
-    target_table,
+VALUES
+(
+    'CLM',
+    'CLM',
     TRUE,
-
-    CASE
-        WHEN source_schema IN ('CP','TE')
-            THEN 'CURRENT_DAY_MERGE'
-
-        WHEN source_schema IN ('CLM','HRIS','OS')
-            THEN 'SNAPSHOT_REPLACE'
-
-        ELSE 'SNAPSHOT_REPLACE'
-    END AS load_strategy,
-
-    CASE
-        WHEN source_schema IN ('CP','TE')
-            THEN 'TIME_STAMP'
-
-        ELSE NULL
-    END AS timestamp_column,
-
+    NULL,
+    10,
+    'SNAPSHOT_REPLACE',
     CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP
-
-FROM etl_control.etl_load_control
-WHERE source_schema IN
+),
 (
     'CP',
-    'CLM',
-    'HRIS',
-    'OS',
-    'TE'
-)
-AND NOT EXISTS
+    'CP',
+    TRUE,
+    NULL,
+    20,
+    'AUTO',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+),
 (
-    SELECT 1
-    FROM etl_control.etl_table_config cfg
-    WHERE cfg.source_schema = etl_load_control.source_schema
-      AND cfg.source_table  = etl_load_control.source_table
-);
+    'HRIS',
+    'HRIS',
+    TRUE,
+    NULL,
+    30,
+    'SNAPSHOT_REPLACE',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+),
+(
+    'OS',
+    'OS',
+    TRUE,
+    NULL,
+    40,
+    'SNAPSHOT_REPLACE',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+),
+(
+    'TE',
+    'TE',
+    TRUE,
+    NULL,
+    50,
+    'AUTO',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+)
+ON CONFLICT (source_schema, target_schema)
+DO UPDATE
+SET
+    enabled = EXCLUDED.enabled,
+    skip_reason = EXCLUDED.skip_reason,
+    schema_load_order = EXCLUDED.schema_load_order,
+    default_load_strategy = EXCLUDED.default_load_strategy,
+    updated_datetime = CURRENT_TIMESTAMP;
