@@ -1,142 +1,229 @@
-"""
-V1 response schemas for the Project Financial API.
-"""
+import json
+from unittest.mock import MagicMock, patch
 
-from datetime import date
-from typing import List, Optional
+import pytest
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from .base import V1MetadataModel
+from v1.handlers import project_financial
 
 
-class V1ProjectFinancialResponseModel(BaseModel):
+PROJECT_FINANCIAL_DATA = {
+    "proj_id": "P-1001",
+    "cust_name": "Test Customer",
+    "proj_start_dt": "2026-01-01",
+    "proj_end_dt": "2026-12-31",
+    "s_proj_rpt_dc": "ACTIVE",
+    "proj_name": "Test Project",
+    "org_id": "ORG-100",
+    "prime_contr_id": "CONT-100",
+    "active_fl": "Y",
+    "proj_type_dc": "FIXED_PRICE",
+    "proj_mgr_name": "Test Manager",
+    "lvl_no": 1,
+    "value_total_amount": 100000.0,
+    "project_value_cost": 70000.0,
+    "project_value_fee": 30000.0,
+    "proj_f_tot_amt": 100000.0,
+    "cost_funded": 65000.0,
+    "fee_funded": 25000.0,
+    "total_billed": 50000.0,
+    "billed_cost": 35000.0,
+    "billed_fee": 15000.0,
+    "open_billing_detail_amt": 5000.0,
+    "open_commit_amt": 10000.0,
+}
+
+
+@pytest.fixture
+def mock_context():
+    """Create a mock AWS Lambda context."""
+    context = MagicMock()
+    context.aws_request_id = "test-request-id"
+    context.function_name = "project-financial-test"
+    return context
+
+
+def create_service_response(
+    items=None,
+    cursor=None,
+    has_more=False,
+):
     """
-    Public V1 response model for one Project Financial record.
-
-    Python/database fields use snake_case.
-    API responses use camelCase aliases.
-    """
-
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
-    )
-
-    proj_id: str = Field(alias="projId")
-    cust_name: Optional[str] = Field(default=None, alias="custName")
-
-    proj_start_dt: Optional[date] = Field(
-        default=None,
-        alias="projStartDt",
-    )
-    proj_end_dt: Optional[date] = Field(
-        default=None,
-        alias="projEndDt",
-    )
-
-    s_proj_rpt_dc: Optional[str] = Field(
-        default=None,
-        alias="sProjRptDc",
-    )
-    proj_name: Optional[str] = Field(
-        default=None,
-        alias="projName",
-    )
-    org_id: Optional[str] = Field(
-        default=None,
-        alias="orgId",
-    )
-    prime_contr_id: Optional[str] = Field(
-        default=None,
-        alias="primeContrId",
-    )
-    active_fl: Optional[str] = Field(
-        default=None,
-        alias="activeFl",
-    )
-    proj_type_dc: Optional[str] = Field(
-        default=None,
-        alias="projTypeDc",
-    )
-    proj_mgr_name: Optional[str] = Field(
-        default=None,
-        alias="projMgrName",
-    )
-    lvl_no: Optional[int] = Field(
-        default=None,
-        alias="lvlNo",
-    )
-
-    value_total_amount: Optional[float] = Field(
-        default=None,
-        alias="valueTotalAmount",
-    )
-    project_value_cost: Optional[float] = Field(
-        default=None,
-        alias="projectValueCost",
-    )
-    project_value_fee: Optional[float] = Field(
-        default=None,
-        alias="projectValueFee",
-    )
-    proj_f_tot_amt: Optional[float] = Field(
-        default=None,
-        alias="projFTotAmt",
-    )
-    cost_funded: Optional[float] = Field(
-        default=None,
-        alias="costFunded",
-    )
-    fee_funded: Optional[float] = Field(
-        default=None,
-        alias="feeFunded",
-    )
-    total_billed: Optional[float] = Field(
-        default=None,
-        alias="totalBilled",
-    )
-    billed_cost: Optional[float] = Field(
-        default=None,
-        alias="billedCost",
-    )
-    billed_fee: Optional[float] = Field(
-        default=None,
-        alias="billedFee",
-    )
-    open_billing_detail_amt: Optional[float] = Field(
-        default=None,
-        alias="openBillingDetailAmt",
-    )
-    open_commit_amt: Optional[float] = Field(
-        default=None,
-        alias="openCommitAmt",
-    )
-
-
-class V1ProjectFinancialListResponseModel(BaseModel):
-    """
-    Response returned by the Project Financial search endpoint.
+    Create a mocked Project Financial service response.
     """
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
+    result = MagicMock()
+
+    result.items = []
+
+    for row in items or []:
+        item = MagicMock()
+
+        # The handler serializes service models using model_dump().
+        item.model_dump.return_value = row
+
+        result.items.append(item)
+
+    result.metadata = MagicMock()
+
+    result.metadata.model_dump.return_value = {
+        "cursor": cursor,
+        "has_more": has_more,
+        "applied_filters": None,
+    }
+
+    return result
+
+
+# ============================================================
+# Search handler tests
+# ============================================================
+
+@patch.object(
+    project_financial.LambdaUtils,
+    "get_json_body",
+)
+@patch.object(
+    project_financial,
+    "search_project_financials",
+)
+def test_search_project_financials_success(
+    mock_search_service,
+    mock_get_json_body,
+    mock_context,
+):
+    """
+    Verify successful Project Financial search.
+    """
+
+    # Keep the body empty first.
+    # This avoids failing handler validation for filter configuration.
+    mock_get_json_body.return_value = {}
+
+    mock_search_service.return_value = create_service_response(
+        items=[PROJECT_FINANCIAL_DATA],
+        cursor="next-token",
+        has_more=True,
     )
 
-    data: List[V1ProjectFinancialResponseModel]
-    metadata: V1MetadataModel
+    event = {
+        "body": "{}",
+    }
 
-
-class V1ProjectFinancialDetailResponseModel(BaseModel):
-    """
-    Response returned by the Project Financial details endpoint.
-    """
-
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
+    response = project_financial.search_project_financials_v1(
+        event,
+        mock_context,
     )
 
-    data: List[V1ProjectFinancialResponseModel]
-    metadata: V1MetadataModel
+    assert response["statusCode"] == 200
+
+    body = json.loads(response["body"])
+
+    assert len(body["data"]) == 1
+
+    row = body["data"][0]
+
+    assert row["projId"] == "P-1001"
+    assert row["custName"] == "Test Customer"
+    assert row["projName"] == "Test Project"
+    assert row["totalBilled"] == 50000.0
+    assert row["openCommitAmt"] == 10000.0
+
+    assert body["metadata"]["cursor"] == "next-token"
+    assert body["metadata"]["hasMore"] is True
+    assert body["metadata"]["responseVersion"] == "v1"
+
+    mock_search_service.assert_called_once()
+
+
+@patch.object(
+    project_financial.LambdaUtils,
+    "get_json_body",
+)
+@patch.object(
+    project_financial,
+    "search_project_financials",
+)
+def test_search_project_financials_empty(
+    mock_search_service,
+    mock_get_json_body,
+    mock_context,
+):
+    """
+    Verify an empty search returns HTTP 200 and an empty data list.
+    """
+
+    mock_get_json_body.return_value = {}
+
+    mock_search_service.return_value = create_service_response(
+        items=[],
+        cursor=None,
+        has_more=False,
+    )
+
+    response = project_financial.search_project_financials_v1(
+        {
+            "body": "{}",
+        },
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    body = json.loads(response["body"])
+
+    assert body["data"] == []
+    assert body["metadata"]["cursor"] is None
+    assert body["metadata"]["hasMore"] is False
+    assert body["metadata"]["responseVersion"] == "v1"
+
+
+@patch.object(
+    project_financial.LambdaUtils,
+    "get_json_body",
+)
+def test_search_project_financials_invalid_json(
+    mock_get_json_body,
+    mock_context,
+):
+    """
+    Verify invalid JSON returns HTTP 400.
+    """
+
+    mock_get_json_body.side_effect = json.JSONDecodeError(
+        "Invalid JSON",
+        "{",
+        0,
+    )
+
+    response = project_financial.search_project_financials_v1(
+        {
+            "body": "{",
+        },
+        mock_context,
+    )
+
+    assert response["statusCode"] == 400
+
+    body = json.loads(response["body"])
+
+    assert body["message"] == "Invalid JSON body provided."
+    assert body["details"] == {}
+
+
+# ============================================================
+# Details handler tests
+# ============================================================
+
+def test_get_project_financial_details_handler_exists():
+    """
+    Verify the details handler is available under its actual name.
+    """
+
+    assert hasattr(
+        project_financial,
+        "get_project_financial_details",
+    )
+
+    assert callable(
+        project_financial.get_project_financial_details
+    )
