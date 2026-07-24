@@ -1,53 +1,66 @@
-# domain/services/__init__.py
+from typing import List, Optional
 
-from .agent_service import agent_get_contract_locations
-from .contract_service import get_contract_details, search_contracts
-from .employee_profile_service import (
-    get_all_employees,
-    get_direct_reports,
-    get_employee_by_id,
-    get_employees_by_clearance,
-    get_employees_in_org,
-    get_personnel_roster,
-)
-from .employee_training_service import (
-    get_all_training,
-    get_training_by_employee,
-    get_training_by_org,
-    get_training_by_status,
-    get_training_by_type,
-)
-from .health_service import HealthService
-from .project_status_service import get_project_status_details
-from .project_forecasts_service import get_project_forecasts
+from pydantic import BaseModel, ConfigDict, Field
 
-# Add this block
-from .project_financial_service import (
-    get_project_financial_details,
-    search_project_financials,
-)
+from .base import V1BaseResponseModel
+from .metadata import V1MetadataModel
 
 
-__all__ = [
-    "search_contracts",
-    "get_contract_details",
-    "HealthService",
-    "get_project_status_details",
-    "get_all_employees",
-    "get_employee_by_id",
-    "get_direct_reports",
-    "get_employees_in_org",
-    "get_employees_by_clearance",
-    "get_all_training",
-    "get_training_by_employee",
-    "get_training_by_status",
-    "get_training_by_org",
-    "get_training_by_type",
-    "agent_get_contract_locations",
-    "get_personnel_roster",
-    "get_project_forecasts",
+class V1ProjectFinancialResponseModel(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True,
+    )
 
-    # Add these two entries
-    "get_project_financial_details",
-    "search_project_financials",
-]
+    proj_id: str = Field(alias="projId")
+    cust_name: Optional[str] = Field(default=None, alias="custName")
+    proj_start_dt: Optional[str] = Field(default=None, alias="projStartDt")
+    proj_end_dt: Optional[str] = Field(default=None, alias="projEndDt")
+    s_proj_rpt_dc: Optional[str] = Field(default=None, alias="sProjRptDc")
+    proj_name: Optional[str] = Field(default=None, alias="projName")
+    org_id: Optional[str] = Field(default=None, alias="orgId")
+    prime_contr_id: Optional[str] = Field(default=None, alias="primeContrId")
+    active_fl: Optional[str] = Field(default=None, alias="activeFl")
+    proj_type_dc: Optional[str] = Field(default=None, alias="projTypeDc")
+    proj_mgr_name: Optional[str] = Field(default=None, alias="projMgrName")
+    lvl_no: Optional[int] = Field(default=None, alias="lvlNo")
+
+    value_total_amount: Optional[float] = Field(
+        default=None,
+        alias="valueTotalAmount",
+    )
+    project_value_cost: Optional[float] = Field(
+        default=None,
+        alias="projectValueCost",
+    )
+    project_value_fee: Optional[float] = Field(
+        default=None,
+        alias="projectValueFee",
+    )
+    proj_f_tot_amt: Optional[float] = Field(
+        default=None,
+        alias="projFTotAmt",
+    )
+    cost_funded: Optional[float] = Field(default=None, alias="costFunded")
+    fee_funded: Optional[float] = Field(default=None, alias="feeFunded")
+    total_billed: Optional[float] = Field(default=None, alias="totalBilled")
+    billed_cost: Optional[float] = Field(default=None, alias="billedCost")
+    billed_fee: Optional[float] = Field(default=None, alias="billedFee")
+    open_billing_detail_amt: Optional[float] = Field(
+        default=None,
+        alias="openBillingDetailAmt",
+    )
+    open_commit_amt: Optional[float] = Field(
+        default=None,
+        alias="openCommitAmt",
+    )
+
+
+class V1ProjectFinancialListResponseModel(V1BaseResponseModel):
+    data: List[V1ProjectFinancialResponseModel]
+    metadata: V1MetadataModel
+
+
+class V1ProjectFinancialDetailResponseModel(V1BaseResponseModel):
+    data: List[V1ProjectFinancialResponseModel]
+    metadata: V1MetadataModel
