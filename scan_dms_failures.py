@@ -12,9 +12,13 @@ Output structure:
     <outdir>/models/<entity_snake>.py
     <outdir>/handlers/<entity_snake>.py
 
+Existing folders are left as-is (never recreated). Existing files are not
+overwritten unless --force is passed.
+
 USAGE
 -----
 python generate_repo_stack.py --config my_view_config.json --outdir ./generated
+python generate_repo_stack.py --config my_view_config.json --outdir ./generated --force
 """
 
 from __future__ import annotations
@@ -493,7 +497,7 @@ def list_{entity_plural_snake}_v1(event, context):
 '''
 
 
-def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
+def generate(config: Dict[str, Any], outdir: str, force: bool = False) -> Dict[str, str]:
     """
     Generates all 4 files for the given config, writing each into its own
     layer subfolder under outdir:
@@ -501,6 +505,10 @@ def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
         outdir/services/<entity_snake>_service.py
         outdir/models/<entity_snake>.py
         outdir/handlers/<entity_snake>.py
+
+    - Existing folders are left as-is (never recreated/touched).
+    - Existing files are NOT overwritten unless force=True; a warning is
+      printed and that file is skipped instead.
     """
     _validate_config(config)
     entity_snake = config["entity_snake"]
@@ -513,13 +521,28 @@ def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
     }
 
     written = {}
+    skipped = []
+
     for folder, (filename, content) in layer_files.items():
         folder_path = os.path.join(outdir, folder)
-        os.makedirs(folder_path, exist_ok=True)
+
+        # Only create the folder if it doesn't already exist.
+        if not os.path.isdir(folder_path):
+            os.makedirs(folder_path, exist_ok=True)
+
         path = os.path.join(folder_path, filename)
+
+        if os.path.exists(path) and not force:
+            print(f"WARNING: '{path}' already exists — skipped (use --force to overwrite).")
+            skipped.append(path)
+            continue
+
         with open(path, "w") as f:
             f.write(content)
         written[f"{folder}/{filename}"] = path
+
+    if skipped:
+        print(f"\n{len(skipped)} file(s) skipped because they already existed.")
 
     return written
 
@@ -528,6 +551,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", help="Path to a JSON config file")
     parser.add_argument("--outdir", default="./generated", help="Directory to write generated files to")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files instead of skipping them")
     args = parser.parse_args()
 
     if not args.config:
@@ -537,7 +561,7 @@ def main():
     with open(args.config) as f:
         config = json.load(f)
 
-    written = generate(config, args.outdir)
+    written = generate(config, args.outdir, force=args.force)
     print("Generated files:")
     for rel_path, full_path in written.items():
         print(f"  {rel_path} -> {full_path}")
