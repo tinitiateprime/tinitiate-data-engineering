@@ -6,6 +6,12 @@ Generates the 4-layer file stack (repo -> service -> domain model -> handler)
 for a materialized-view-backed entity, following the contract_repo.py /
 contract_service.py / contract.py / contracts-handler pattern.
 
+Output structure:
+    <outdir>/repositories/<entity_snake>_repo.py
+    <outdir>/services/<entity_snake>_service.py
+    <outdir>/models/<entity_snake>.py
+    <outdir>/handlers/<entity_snake>.py
+
 USAGE
 -----
 python generate_repo_stack.py --config my_view_config.json --outdir ./generated
@@ -488,23 +494,32 @@ def list_{entity_plural_snake}_v1(event, context):
 
 
 def generate(config: Dict[str, Any], outdir: str) -> Dict[str, str]:
+    """
+    Generates all 4 files for the given config, writing each into its own
+    layer subfolder under outdir:
+        outdir/repositories/<entity_snake>_repo.py
+        outdir/services/<entity_snake>_service.py
+        outdir/models/<entity_snake>.py
+        outdir/handlers/<entity_snake>.py
+    """
     _validate_config(config)
-    os.makedirs(outdir, exist_ok=True)
     entity_snake = config["entity_snake"]
 
-    files = {
-        f"{entity_snake}_repo.py": render_repo(config),
-        f"{entity_snake}_service.py": render_service(config),
-        f"{entity_snake}_model.py": render_model(config),
-        f"{entity_snake}_handler.py": render_handler(config),
+    layer_files = {
+        "repositories": (f"{entity_snake}_repo.py", render_repo(config)),
+        "services": (f"{entity_snake}_service.py", render_service(config)),
+        "models": (f"{entity_snake}.py", render_model(config)),
+        "handlers": (f"{entity_snake}.py", render_handler(config)),
     }
 
     written = {}
-    for filename, content in files.items():
-        path = os.path.join(outdir, filename)
+    for folder, (filename, content) in layer_files.items():
+        folder_path = os.path.join(outdir, folder)
+        os.makedirs(folder_path, exist_ok=True)
+        path = os.path.join(folder_path, filename)
         with open(path, "w") as f:
             f.write(content)
-        written[filename] = path
+        written[f"{folder}/{filename}"] = path
 
     return written
 
@@ -524,8 +539,8 @@ def main():
 
     written = generate(config, args.outdir)
     print("Generated files:")
-    for filename, path in written.items():
-        print(f"  {filename} -> {path}")
+    for rel_path, full_path in written.items():
+        print(f"  {rel_path} -> {full_path}")
 
 
 if __name__ == "__main__":
