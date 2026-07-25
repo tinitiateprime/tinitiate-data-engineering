@@ -47,6 +47,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import boto3
 import psycopg2
 from psycopg2 import sql
 
@@ -82,6 +83,9 @@ from psycopg2 import sql
 #   --BUCKET_ROW_THRESHOLD 1000000
 #   --VALIDATE_KEY_OVERRIDE false
 #   --ENABLE_EXACT_COUNTS false
+#   --FINAL_EXACT_VALIDATION true
+#   --ENABLE_EMAIL_ALERTS false
+#   --SNS_TOPIC_ARN arn:aws-us-gov:sns:region:account:topic
 #   --ANALYZE_TEMP_TABLE true
 #   --COPY_PIPE_BUFFER_BYTES 1048576
 #   --LOOKBACK_DAYS 2
@@ -266,6 +270,27 @@ ENABLE_EXACT_COUNTS = (
     .lower()
     in {"1", "true", "t", "yes", "y"}
 )
+
+# Final control-table counts are authoritative COUNT(*) values.
+# Keep this true when etl_load_control drives discrepancy alerting.
+FINAL_EXACT_VALIDATION = (
+    get_runtime_parameter("FINAL_EXACT_VALIDATION", default="true")
+    .strip()
+    .lower()
+    in {"1", "true", "t", "yes", "y"}
+)
+
+ENABLE_EMAIL_ALERTS = (
+    get_runtime_parameter("ENABLE_EMAIL_ALERTS", default="false")
+    .strip()
+    .lower()
+    in {"1", "true", "t", "yes", "y"}
+)
+
+SNS_TOPIC_ARN = get_runtime_parameter(
+    "SNS_TOPIC_ARN",
+    default="",
+).strip()
 
 ANALYZE_TEMP_TABLE = (
     get_runtime_parameter("ANALYZE_TEMP_TABLE", default="true")
@@ -1159,6 +1184,95 @@ def get_row_count(conn, schema_name, table_name):
             )
         )
         return cur.fetchone()[0]
+
+
+def get_exact_row_count(conn, schema_name, table_name):
+    """
+    Return the authoritative physical row count using COUNT(*).
+
+    This function is used for the final etl_load_control record regardless of
+    PostgreSQL statistics. Estimated counts may still be used for progress
+    logging when ENABLE_EXACT_COUNTS is false.
+    """
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                sql.Identifier(schema_name),
+                sql.Identifier(table_name),
+            )
+        )
+        return int(cur.fetchone()[0])
+
+
+def send_sns_alert(
+    source_table,
+    target_table,
+    status,
+    bronze_count,
+    silver_count,
+    message,
+):
+    """
+    Publish an SNS alert for a genuine processing failure or exact mismatch.
+
+    Email delivery requires an email subscription on the configured SNS topic.
+    Notification failure is logged but does not replace the ETL result.
+    """
+    if not ENABLE_EMAIL_ALERTS:
+        return
+
+    if not SNS_TOPIC_ARN:
+        print(
+            f"[{source_table}] WARNING: ENABLE_EMAIL_ALERTS=true but "
+            "SNS_TOPIC_ARN is empty."
+        )
+        return
+
+    difference = None
+    if bronze_count is not None and silver_count is not None:
+        difference = bronze_count - silver_count
+
+    subject = (
+        f"ETL Alert: {SOURCE_SCHEMA}.{source_table} {status}"
+    )[:100]
+
+    body = f"""
+Bronze-to-Silver ETL Alert
+
+Job Name: {JOB_NAME}
+Run ID: {RUN_ID}
+
+Source: {SOURCE_SCHEMA}.{source_table}
+Target: {TARGET_SCHEMA}.{target_table}
+
+Status: {status}
+Exact Bronze Count: {bronze_count}
+Exact Silver Count: {silver_count}
+Difference (Bronze - Silver): {difference}
+
+Message:
+{message or 'No additional message was recorded.'}
+""".strip()
+
+    try:
+        sns = boto3.client("sns")
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=subject,
+            Message=body,
+        )
+        print(f"[{source_table}] SNS alert published.")
+
+    except Exception as notification_error:
+        print(
+            f"[{source_table}] WARNING: SNS alert failed: "
+            f"{format_database_exception(notification_error)}"
+        )
 
 
 def get_estimated_row_count(conn, schema_name, table_name):
@@ -4313,6 +4427,107 @@ def process_table(
                 else:
                     message = f"cleanup_error={cleanup_message}"
 
+        # Final authoritative validation must happen after the load transaction
+        # and TEMP cleanup are complete. The values written to etl_load_control
+        # are therefore real COUNT(*) values, not n_live_tup/reltuples estimates.
+        if enabled and FINAL_EXACT_VALIDATION:
+            try:
+                try:
+                    bronze_conn.rollback()
+                except Exception:
+                    pass
+
+                try:
+                    silver_conn.rollback()
+                except Exception:
+                    pass
+
+                bronze_count = get_exact_row_count(
+                    bronze_conn,
+                    SOURCE_SCHEMA,
+                    source_table,
+                )
+
+                silver_count = get_exact_row_count(
+                    silver_conn,
+                    TARGET_SCHEMA,
+                    target_table,
+                )
+
+                exact_difference = bronze_count - silver_count
+
+                print(
+                    f"[{source_table}] FINAL EXACT COUNTS: "
+                    f"Bronze={bronze_count}, "
+                    f"Silver={silver_count}, "
+                    f"Difference={exact_difference}."
+                )
+
+                if status == "SUCCESS" and exact_difference != 0:
+                    status = "FAILED"
+                    error_count += 1
+
+                    mismatch_message = (
+                        "Exact post-load count mismatch. "
+                        f"Bronze={bronze_count}, "
+                        f"Silver={silver_count}, "
+                        f"Difference={exact_difference}."
+                    )
+
+                    message = (
+                        f"{message} | {mismatch_message}"
+                        if message
+                        else mismatch_message
+                    )
+
+                    log_error(
+                        silver_conn,
+                        source_table,
+                        target_table,
+                        "EXACT_COUNT_VALIDATION",
+                        mismatch_message,
+                        severity="ERROR",
+                    )
+
+                elif status == "SUCCESS":
+                    validation_message = (
+                        "Exact post-load count validation passed. "
+                        f"Bronze={bronze_count}, "
+                        f"Silver={silver_count}, Difference=0."
+                    )
+
+                    message = (
+                        f"{message} | {validation_message}"
+                        if message
+                        else validation_message
+                    )
+
+            except Exception as count_error:
+                count_error_message = (
+                    "Unable to complete exact post-load count validation: "
+                    + format_database_exception(count_error)
+                )
+
+                if status == "SUCCESS":
+                    status = "FAILED"
+
+                error_count += 1
+                message = (
+                    f"{message} | {count_error_message}"
+                    if message
+                    else count_error_message
+                )
+
+                log_error(
+                    silver_conn,
+                    source_table,
+                    target_table,
+                    "EXACT_COUNT_VALIDATION",
+                    count_error_message,
+                    severity="ERROR",
+                    error_detail=traceback.format_exc(),
+                )
+
         end_datetime = datetime.now(timezone.utc)
 
         write_control_record(
@@ -4329,6 +4544,20 @@ def process_table(
             error_count,
             message,
         )
+
+        if status in {
+            "FAILED",
+            "PARTIAL_SUCCESS",
+            "BLOCKED_SCHEMA_REVIEW",
+        }:
+            send_sns_alert(
+                source_table,
+                target_table,
+                status,
+                bronze_count,
+                silver_count,
+                message,
+            )
 
         print(
             f"[{source_table}] status={status}, "
@@ -4359,7 +4588,7 @@ def main():
 
     try:
         print("=" * 80)
-        print("POSTGRES GLUE FRAMEWORK - VERSION 24 TWO-DAY ROLLING MERGE")
+        print("POSTGRES GLUE FRAMEWORK - VERSION 25 EXACT COUNTS + SNS ALERTS")
         print(f"Run ID             : {RUN_ID}")
         print(f"Job name           : {JOB_NAME}")
         print(f"Bronze host/database: {BRONZE_HOST}/{BRONZE_DB}")
@@ -4373,7 +4602,13 @@ def main():
         print(f"Active flag column : {ACTIVE_FLAG_COLUMN}")
         print(f"Active/Inactive    : {ACTIVE_FLAG_Y}/{ACTIVE_FLAG_N}")
         print(f"Validate override  : {VALIDATE_KEY_OVERRIDE}")
-        print(f"Exact counts       : {ENABLE_EXACT_COUNTS}")
+        print(f"Progress exact cnt : {ENABLE_EXACT_COUNTS}")
+        print(f"Final exact check  : {FINAL_EXACT_VALIDATION}")
+        print(f"Email alerts       : {ENABLE_EMAIL_ALERTS}")
+        print(
+            f"SNS topic          : "
+            f"{'CONFIGURED' if SNS_TOPIC_ARN else 'NOT CONFIGURED'}"
+        )
         print(f"Analyze TEMP       : {ANALYZE_TEMP_TABLE}")
         print(f"COPY pipe buffer   : {COPY_PIPE_BUFFER_BYTES}")
         print(f"Timestamp columns  : {TIMESTAMP_COLUMN_CANDIDATES}")
