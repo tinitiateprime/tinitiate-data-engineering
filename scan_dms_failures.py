@@ -1,232 +1,121 @@
-"""
-V1 response schemas for the Project Financial API.
-"""
 
-from datetime import date
-from typing import List, Optional
+SELECT
+    table_schema,
+    table_name,
+    column_name,
+    data_type,
+    character_maximum_length,
+    numeric_precision,
+    numeric_scale,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema='CLM'
+ORDER BY table_name, ordinal_position;
 
-from pydantic import BaseModel, ConfigDict, Field
+Find Missing Columns
 
-from core.filters import FilterContext
-from .base import V1MetadataModel
+SELECT
+    b.table_name,
+    b.column_name
+FROM bronze_columns b
+LEFT JOIN silver_columns s
+ON b.table_name = s.table_name
+AND b.column_name = s.column_name
+WHERE s.column_name IS NULL;
 
+Compare Data Types
 
-# ---------------------------------------------------------------------------
-# Allowed fields & operators, sort fields, and filter aliases
-# ---------------------------------------------------------------------------
-PROJECTFINANCIAL_FILTER_CONTEXT = FilterContext(
-    allowed_fields={
-        "proj_id": {"operators": {"eq", "in", "contains"}},
-        "cust_name": {"operators": {"eq", "in", "contains"}},
-        "proj_start_dt": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "proj_end_dt": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "s_proj_rpt_dc": {"operators": {"eq", "in"}},
-        "proj_name": {"operators": {"eq", "in", "contains"}},
-        "org_id": {"operators": {"eq", "in"}},
-        "prime_contr_id": {"operators": {"eq", "in"}},
-        "active_fl": {"operators": {"eq", "in"}},
-        "proj_type_dc": {"operators": {"eq", "in"}},
-        "proj_mgr_name": {"operators": {"eq", "in", "contains"}},
-        "lvl_no": {"operators": {"eq", "in"}},
-        "value_total_amount": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "project_value_cost": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "project_value_fee": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "proj_f_tot_amt": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "cost_funded": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "fee_funded": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "total_billed": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "billed_cost": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "billed_fee": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "open_billing_detail_amt": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-        "open_commit_amt": {"operators": {"eq", "gt", "gte", "lt", "lte", "between"}},
-    },
-    allowed_sort_fields={
-        "proj_id",
-        "cust_name",
-        "proj_start_dt",
-        "proj_end_dt",
-        "s_proj_rpt_dc",
-        "proj_name",
-        "org_id",
-        "prime_contr_id",
-        "proj_type_dc",
-        "proj_mgr_name",
-        "lvl_no",
-        "value_total_amount",
-        "project_value_cost",
-        "project_value_fee",
-        "proj_f_tot_amt",
-        "cost_funded",
-        "fee_funded",
-        "total_billed",
-        "billed_cost",
-        "billed_fee",
-        "open_billing_detail_amt",
-        "open_commit_amt",
-    },
-    filter_aliases={
-        "projId": "proj_id",
-        "custName": "cust_name",
-        "projStartDt": "proj_start_dt",
-        "projEndDt": "proj_end_dt",
-        "sProjRptDc": "s_proj_rpt_dc",
-        "projName": "proj_name",
-        "orgId": "org_id",
-        "primeContrId": "prime_contr_id",
-        "activeFl": "active_fl",
-        "projTypeDc": "proj_type_dc",
-        "projMgrName": "proj_mgr_name",
-        "lvlNo": "lvl_no",
-        "valueTotalAmount": "value_total_amount",
-        "projectValueCost": "project_value_cost",
-        "projectValueFee": "project_value_fee",
-        "projFTotAmt": "proj_f_tot_amt",
-        "costFunded": "cost_funded",
-        "feeFunded": "fee_funded",
-        "totalBilled": "total_billed",
-        "billedCost": "billed_cost",
-        "billedFee": "billed_fee",
-        "openBillingDetailAmt": "open_billing_detail_amt",
-        "openCommitAmt": "open_commit_amt",
-    },
-)
+SELECT
+    b.table_name,
+    b.column_name,
+    b.data_type AS bronze_type,
+    s.data_type AS silver_type
+FROM bronze_columns b
+JOIN silver_columns s
+ON b.table_name=s.table_name
+AND b.column_name=s.column_name
+WHERE b.data_type <> s.data_type;
 
-# Legacy support for individual constants pointing to the new FilterContext
-PROJECTFINANCIAL_ALLOWED_FILTER_FIELDS = PROJECTFINANCIAL_FILTER_CONTEXT.allowed_fields
-PROJECTFINANCIAL_ALLOWED_SORT_FIELDS = PROJECTFINANCIAL_FILTER_CONTEXT.allowed_sort_fields
-PROJECTFINANCIAL_FILTER_ALIASES = PROJECTFINANCIAL_FILTER_CONTEXT.filter_aliases
+Compare Primary Keys
+
+SELECT
+    tc.table_name,
+    kcu.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+ON tc.constraint_name=kcu.constraint_name
+WHERE tc.constraint_type='PRIMARY KEY'
+AND tc.table_schema='CLM'
+ORDER BY tc.table_name;
 
 
-class V1ProjectFinancialResponseModel(BaseModel):
-    """
-    Public V1 response model for one Project Financial record.
+Compare Unique Constraints
 
-    Python/database fields use snake_case.
-    API responses use camelCase aliases.
-    """
+SELECT
+    tc.table_name,
+    tc.constraint_name,
+    kcu.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+ON tc.constraint_name=kcu.constraint_name
+WHERE tc.constraint_type='UNIQUE'
+AND tc.table_schema='CLM'
+ORDER BY tc.table_name;
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
-    )
+Compare Foreign Keys
 
-    proj_id: str = Field(alias="projId")
-    cust_name: Optional[str] = Field(default=None, alias="custName")
+SELECT
+    tc.table_name,
+    kcu.column_name,
+    ccu.table_name AS referenced_table,
+    ccu.column_name AS referenced_column
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+ON tc.constraint_name=kcu.constraint_name
+JOIN information_schema.constraint_column_usage ccu
+ON ccu.constraint_name=tc.constraint_name
+WHERE tc.constraint_type='FOREIGN KEY'
+AND tc.table_schema='CLM';
 
-    proj_start_dt: Optional[date] = Field(
-        default=None,
-        alias="projStartDt",
-    )
-    proj_end_dt: Optional[date] = Field(
-        default=None,
-        alias="projEndDt",
-    )
-    s_proj_rpt_dc: Optional[str] = Field(
-        default=None,
-        alias="sProjRptDc",
-    )
-    proj_name: Optional[str] = Field(
-        default=None,
-        alias="projName",
-    )
-    org_id: Optional[str] = Field(
-        default=None,
-        alias="orgId",
-    )
-    prime_contr_id: Optional[str] = Field(
-        default=None,
-        alias="primeContrId",
-    )
-    active_fl: Optional[str] = Field(
-        default=None,
-        alias="activeFl",
-    )
-    proj_type_dc: Optional[str] = Field(
-        default=None,
-        alias="projTypeDc",
-    )
-    proj_mgr_name: Optional[str] = Field(
-        default=None,
-        alias="projMgrName",
-    )
-    lvl_no: Optional[int] = Field(
-        default=None,
-        alias="lvlNo",
-    )
+Compare Indexes
 
-    value_total_amount: Optional[float] = Field(
-        default=None,
-        alias="valueTotalAmount",
-    )
-    project_value_cost: Optional[float] = Field(
-        default=None,
-        alias="projectValueCost",
-    )
-    project_value_fee: Optional[float] = Field(
-        default=None,
-        alias="projectValueFee",
-    )
-    proj_f_tot_amt: Optional[float] = Field(
-        default=None,
-        alias="projFTotAmt",
-    )
-    cost_funded: Optional[float] = Field(
-        default=None,
-        alias="costFunded",
-    )
-    fee_funded: Optional[float] = Field(
-        default=None,
-        alias="feeFunded",
-    )
-    total_billed: Optional[float] = Field(
-        default=None,
-        alias="totalBilled",
-    )
-    billed_cost: Optional[float] = Field(
-        default=None,
-        alias="billedCost",
-    )
-    billed_fee: Optional[float] = Field(
-        default=None,
-        alias="billedFee",
-    )
-    open_billing_detail_amt: Optional[float] = Field(
-        default=None,
-        alias="openBillingDetailAmt",
-    )
-    open_commit_amt: Optional[float] = Field(
-        default=None,
-        alias="openCommitAmt",
-    )
+SELECT
+    schemaname,
+    tablename,
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname='CLM'
+ORDER BY tablename;
 
 
-class V1ProjectFinancialListResponseModel(BaseModel):
-    """
-    Response returned by the Project Financial search endpoint.
-    """
+Compare Check Constraints
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
-    )
-
-    data: List[V1ProjectFinancialResponseModel]
-    metadata: V1MetadataModel
+SELECT
+    conrelid::regclass AS table_name,
+    conname,
+    pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE contype='c';
 
 
-class V1ProjectFinancialDetailResponseModel(BaseModel):
-    """
-    Response returned by the Project Financial details endpoint.
-    """
+Get ALL Constraints
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
-    )
+SELECT
+    tc.table_name,
+    tc.constraint_type,
+    tc.constraint_name,
+    string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) AS columns
+FROM information_schema.table_constraints tc
+LEFT JOIN information_schema.key_column_usage kcu
+ON tc.constraint_name=kcu.constraint_name
+AND tc.table_schema=kcu.table_schema
+WHERE tc.table_schema='CLM'
+GROUP BY
+    tc.table_name,
+    tc.constraint_type,
+    tc.constraint_name
+ORDER BY
+    tc.table_name,
+    tc.constraint_type;
 
-    data: List[V1ProjectFinancialResponseModel]
-    metadata: V1MetadataModel
-
-
-# Reusable context for project_financial filtering and sorting (standard name)
-project_financial_filter_context = PROJECTFINANCIAL_FILTER_CONTEXT
