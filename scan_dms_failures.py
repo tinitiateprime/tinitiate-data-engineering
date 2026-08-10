@@ -1,378 +1,249 @@
-# main-function\mt-dm-lambda-src\v1\handlers\employees_synth.py
+# tests/test_handlers_employee_synth.py
 import json
+from unittest.mock import MagicMock, Mock, patch
 
-from core.config import settings
-from core.exceptions import ResourceNotFoundError
-from core.filters import SortModel
-from core.pagination import PaginationModel
-from core.responses import api_handler
-from core.utils import LambdaUtils
-from domain.services.employee_profile_synth_service import (
-    get_all_employees,
-    get_direct_reports,
-    get_employee_by_id,
-    get_employees_by_clearance,
-    get_employees_in_org,
-    get_personnel_roster,
+import pytest
+from domain.models.metadata import MetadataModel
+from v1.handlers import (
+    employees_synth as handlers,  # points at the synth handler module
 )
-from v1.logic import router
-from v1.schemas.employees import (
-    V1EmployeeListResponseModel,
-    V1EmployeeResponseModel,
-    V1MetadataModel,
-)
+from v1.schemas import FiltersEnvelope
 
 
-@router.route("POST", r"/v1/employees/synth/profiles/search", is_regex=False)
-@api_handler
-def search_employee_profiles_synth_v1(event, context):
-    """
-    Search for employee profiles in the synth database.
+def create_mock_service_response(items, cursor=None, has_more=False):
+    """Helper to create a properly structured service response mock"""
 
-    Args:
-        event: Lambda event containing JSON body with 'filters', 'sort', 'page', and 'columns'.
-        context: Lambda context.
-
-    Returns:
-        Dict containing metadata (cursor, filters, count) and the list of employee profiles.
-    """
-    try:
-        body = LambdaUtils.get_json_body(event)
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON body provided.")
-
-    filters_dict = body.get("filters", {})
-    sort = SortModel(**body.get("sort", {}))
-    page = PaginationModel(**body.get("page", {}))
-    columns = body.get("columns")
-
-    results = get_all_employees(
-        filters=filters_dict, sort=sort, page=page, columns=columns
+    # Services now return the generic MetadataModel
+    metadata = MetadataModel(
+        cursor=cursor,
+        has_more=has_more,
+        applied_filters=FiltersEnvelope(filters={}),
     )
 
-    if not results.items:
-        raise ResourceNotFoundError(
-            message="Employees with filters not found",
-            details={"filters": filters_dict},
+    # Mock items with model_dump capability
+    mock_items = []
+    for item in items:
+        m = MagicMock()
+        m.model_dump.return_value = item
+        mock_items.append(m)
+
+    class MockServiceResponse:
+        def __init__(self, items, metadata):
+            self.items = items
+            self.metadata = metadata
+
+    return MockServiceResponse(items=mock_items, metadata=metadata)
+
+
+@pytest.fixture
+def mock_user_record():
+    """Provides a single mocked user data record with split names to match assertions."""
+    return {
+        "EMPL_ID": "111111",
+        "MY_ID": "123456",
+        "FIRST_NAME": "John",
+        "LAST_NAME": "Doe",
+        "DEPT_NAME": "Engineering",
+        "MGR_EMPL_ID": "00001",
+        "ORG_ID": "01.626.N32.10",
+        "clearanceStatus": "Active",
+    }
+
+
+@pytest.fixture
+def mock_user_list():
+    """Provides a list of 5 distinct user records with manager IDs assigned."""
+    return [
+        {
+            "EMPL_ID": "111111",
+            "MY_ID": "123456",
+            "FIRST_NAME": "John",
+            "LAST_NAME": "Doe",
+            "DEPT_NAME": "Engineering",
+            "MGR_EMPL_ID": "111111",  # Self-managed or reports to upper management
+            "ORG_ID": "ORG001",
+        },
+        {
+            "EMPL_ID": "222222",
+            "MY_ID": "234567",
+            "FIRST_NAME": "Jane",
+            "LAST_NAME": "Smith",
+            "DEPT_NAME": "Engineering",
+            "MGR_EMPL_ID": "11111",
+            "ORG_ID": "ORG001",
+        },
+        {
+            "EMPL_ID": "333333",
+            "MY_ID": "345678",
+            "FIRST_NAME": "Bob",
+            "LAST_NAME": "Jones",
+            "DEPT_NAME": "HR",
+            "MGR_EMPL_ID": "11111",
+            "ORG_ID": "ORG002",
+        },
+        {
+            "EMPL_ID": "444444",
+            "MY_ID": "456789",
+            "FIRST_NAME": "Maria",
+            "LAST_NAME": "Garcia",
+            "DEPT_NAME": "Engineering",
+            "MGR_EMPL_ID": "11111",
+            "ORG_ID": "ORG003",
+        },
+        {
+            "EMPL_ID": "555555",
+            "MY_ID": "567890",
+            "FIRST_NAME": "Alex",
+            "LAST_NAME": "Miller",
+            "DEPT_NAME": "Marketing",
+            "MGR_EMPL_ID": "11111",
+            "ORG_ID": "ORG002",
+        },
+    ]
+
+
+class TestEmployeeProfileSynthHandlers:
+    """Test suite for synth employee profile handlers"""
+
+    @patch("v1.handlers.employees_synth.get_all_employees")
+    def test_search_employee_profiles_synth_success(
+        self, mock_service, create_mock_event, mock_context, mock_user_record
+    ):
+        """Test successful synth employee profile search"""
+        # Arrange
+        request_id = "test-search-synth-123"
+        mock_service.return_value = create_mock_service_response(
+            items=[mock_user_record],
+            cursor=None,
+            has_more=False,
         )
 
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
-
-    return response.model_dump(by_alias=True)
-
-
-@router.route("POST", r"/v1/employees/synth/profiles/roster", is_regex=False)
-@api_handler
-def get_personnel_roster_synth_v1(event, context):
-    """
-    Retrieve the personnel roster (alpha-report fields) via POST search, from the synth database.
-
-    Args:
-        event: Lambda event containing JSON body with 'filters', 'sort', 'page', and 'columns'.
-        context: Lambda context.
-
-    Returns:
-        Dict containing metadata and the list of personnel-roster records.
-    """
-    try:
-        body = LambdaUtils.get_json_body(event)
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON body provided.")
-
-    filters_dict = body.get("filters", {})
-    sort = SortModel(**body.get("sort", {}))
-    page = PaginationModel(**body.get("page", {}))
-    columns = body.get("columns")
-
-    results = get_personnel_roster(
-        filters=filters_dict, sort=sort, page=page, columns=columns
-    )
-
-    # Note: no 404 on empty - a bulk sync feed legitimately returns [] and the
-    # caller expects a 200 with an empty data array. Matches the mtdm endpoint.
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
-
-    return response.model_dump(by_alias=True)
-
-
-@router.route(
-    "GET", r"/v1/employees/synth/profiles/manager/?$", is_regex=True
-)
-@api_handler
-def get_employee_direct_reports_blank_synth_v1(event, context):
-    """
-    Handle requests to the synth direct reports endpoint missing an ID.
-    Raises:
-        ValueError: Always, as manager ID is a required path parameter.
-    """
-    err = ValueError("Manager ID Missing.")
-    err.add_note(
-        "Manager ID is required, e.g. /v1/employees/synth/profiles/manager/12345"
-    )
-    raise err
-
-
-@router.route(
-    "GET",
-    r"/v1/employees/synth/profiles/manager/(?P<mgr_empl_id>[^/]+)",
-    is_regex=True,
-)
-@api_handler
-def get_employee_direct_reports_synth_v1(event, context):
-    """
-    Retrieve direct reports for a specific manager, from the synth database.
-
-    Args:
-        event: Lambda event containing 'mgr_empl_id' path parameter and optional query params
-               for 'limit', 'cursor', 'sortField', and 'sortOrder'.
-        context: Lambda context.
-
-    Returns:
-        Dict containing metadata and the list of direct reports.
-    """
-    mgr_empl_id = LambdaUtils.get_path_param(event, "mgr_empl_id")
-    query_params = LambdaUtils.get_all_query_params(event)
-
-    # Quick exit required parameter is missing for this route
-    if not mgr_empl_id:
-        raise ValueError("Manager Employee ID is required.")
-
-    page = PaginationModel(
-        limit=int(query_params.get("limit", settings.DEFAULT_PAGE_SIZE)),
-        cursor=query_params.get("cursor"),
-    )
-    sort = SortModel(
-        field=query_params.get("sortField", "LAST_NAME"),
-        order=query_params.get("sortOrder", "asc"),
-    )
-
-    columns = LambdaUtils.get_columns_query_parameter(event)
-
-    results = get_direct_reports(
-        mgr_empl_id=mgr_empl_id, page=page, sort=sort, columns=columns
-    )
-
-    if not results.items:
-        raise ResourceNotFoundError(
-            message=f"Employees with Manager ID {mgr_empl_id} not found.",
-            details={"mgr_empl_id": mgr_empl_id},
+        event = create_mock_event(
+            route="/v1/employees/synth/profiles/search",
+            method="POST",
+            body={
+                "filters": {"DEPT_NAME": {"eq": mock_user_record["DEPT_NAME"]}},
+            },
+            request_id=request_id,
         )
+        context = mock_context(request_id)
 
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
+        # Act
+        response = handlers.search_employee_profiles_synth_v1(event, context)
+        body = json.loads(response["body"])
 
-    return response.model_dump(by_alias=True)
+        # Assert
+        assert response["statusCode"] == 200
+        assert len(body["data"]) == 1
+        assert body["data"][0]["employeeId"] == mock_user_record["EMPL_ID"]
+        assert body["data"][0]["firstName"] == mock_user_record["FIRST_NAME"]
+        assert body["data"][0]["lastName"] == mock_user_record["LAST_NAME"]
 
+    @patch("v1.handlers.employees_synth.get_employee_by_id")
+    def test_get_employee_profile_synth_by_id_success(
+        self, mock_service, mock_user_record
+    ):
+        """Test getting synth employee by ID"""
+        # Arrange
+        items = [mock_user_record]
+        mock_service.return_value = create_mock_service_response(items)
 
-@router.route("GET", r"/v1/employees/synth/profiles/org/?$", is_regex=True)
-@api_handler
-def get_org_blank_synth_v1(event, context):
-    """
-    Handle requests to the synth organization profiles endpoint missing an ID.
-    Raises:
-        ValueError: Always, as organization ID is a required path parameter.
-    """
-    err = ValueError("Organization ID is Missing.")
-    err.add_note(
-        "Organization ID is required, e.g. /v1/employees/synth/profiles/org/01.626.N32.10"
-    )
-    raise err
+        event = {
+            "pathParameters": {"empl_id": mock_user_record["EMPL_ID"]},
+            "queryStringParameters": {},
+        }
 
+        # Act
+        response = handlers.get_employee_profile_synth_v1(event, Mock())
+        body = json.loads(response["body"])
 
-@router.route(
-    "GET",
-    r"/v1/employees/synth/profiles/org/(?P<org_id>[^/]+)",
-    is_regex=True,
-)
-@api_handler
-def get_employees_by_org_synth_v1(event, context):
-    """
-    Retrieve all employees belonging to a specific organization, from the synth database.
+        # Assert
+        assert response["statusCode"] == 200
+        assert len(body["data"]) == 1
+        assert body["data"][0]["employeeId"] == mock_user_record["EMPL_ID"]
+        assert body["metadata"]["responseVersion"] == "v1"
 
-    Args:
-        event: Lambda event containing 'org_id' path parameter and optional query params
-               for pagination and sorting.
-        context: Lambda context.
+    @patch("v1.handlers.employees_synth.get_employee_by_id")
+    def test_get_employee_profile_synth_not_found(self, mock_service):
+        """Test getting synth employee that doesn't exist"""
+        # Arrange
+        mock_service.return_value = create_mock_service_response([])
 
-    Returns:
-        Dict containing metadata and the list of employees in the organization.
-    """
-    org_id = LambdaUtils.get_path_param(event, "org_id")
-    query_params = LambdaUtils.get_all_query_params(event)
+        event = {"pathParameters": {"empl_id": "999999"}, "queryStringParameters": {}}
+        context = Mock()
 
-    if not org_id:
-        err = ValueError("Organization ID Missing.")
-        err.add_note(
-            "Organization ID is required, e.g. /v1/employees/synth/profiles/org/01.626.N32.10"
+        # Act
+        response = handlers.get_employee_profile_synth_v1(event, context)
+
+        # Assert - Should return 404
+        assert response["statusCode"] == 404
+        body = json.loads(response["body"])
+        assert "Employee with ID 999999 not found" in body["error"]["message"]
+
+    @patch("v1.handlers.employees_synth.get_direct_reports")
+    def test_get_direct_reports_synth_success(self, mock_service, mock_user_list):
+        """Test getting synth direct reports for a manager"""
+        # Arrange
+        items = mock_user_list
+        mock_service.return_value = create_mock_service_response(items)
+
+        event = {
+            "pathParameters": {"mgr_empl_id": mock_user_list[0]["MGR_EMPL_ID"]},
+            "queryStringParameters": {},
+        }
+
+        # Act
+        response = handlers.get_employee_direct_reports_synth_v1(event, Mock())
+        body = json.loads(response["body"])
+
+        # Assert
+        assert response["statusCode"] == 200
+        assert len(body["data"]) == len(mock_user_list)
+        assert body["metadata"]["responseVersion"] == "v1"
+
+    @patch("v1.handlers.employees_synth.get_employees_in_org")
+    def test_get_employees_by_org_synth_success(self, mock_service, mock_user_record):
+        """Test getting synth employees by organization"""
+        # Arrange
+        items = [mock_user_record]
+        mock_service.return_value = create_mock_service_response(items)
+
+        event = {
+            "pathParameters": {"org_id": mock_user_record["ORG_ID"]},
+            "queryStringParameters": {},
+        }
+
+        # Act
+        response = handlers.get_employees_by_org_synth_v1(event, Mock())
+        body = json.loads(response["body"])
+
+        # Assert
+        assert response["statusCode"] == 200
+        assert body["data"][0]["orgId"] == mock_user_record["ORG_ID"]
+        assert body["metadata"]["responseVersion"] == "v1"
+
+    @patch("v1.handlers.employees_synth.get_employees_by_clearance")
+    def test_get_employees_by_clearance_synth_success(
+        self, mock_service, mock_user_record
+    ):
+        """Test getting synth employees by clearance status"""
+        # Arrange
+        items = [mock_user_record]
+        mock_service.return_value = create_mock_service_response(items)
+
+        event = {
+            "pathParameters": {"status": mock_user_record["clearanceStatus"]},
+            "queryStringParameters": {},
+        }
+        context = Mock()
+
+        # Act
+        response = handlers.get_employees_by_clearance_synth_v1(event, context)
+        body = json.loads(response["body"])
+
+        # Assert
+        assert response["statusCode"] == 200
+        assert (
+            body["data"][0]["clearanceStatus"] == mock_user_record["clearanceStatus"]
         )
-        raise err
-
-    page = PaginationModel(
-        limit=int(query_params.get("limit", settings.DEFAULT_PAGE_SIZE)),
-        cursor=query_params.get("cursor"),
-    )
-    sort = SortModel(
-        field=query_params.get("sortField", "LAST_NAME"),
-        order=query_params.get("sortOrder", "asc"),
-    )
-    columns = LambdaUtils.get_columns_query_parameter(event)
-
-    results = get_employees_in_org(org_id=org_id, page=page, sort=sort, columns=columns)
-
-    if not results.items:
-        raise ResourceNotFoundError(
-            message=f"Employees with Org ID {org_id} not found.",
-            details={"org_id": org_id},
-        )
-
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
-
-    return response.model_dump(by_alias=True)
-
-
-@router.route(
-    "GET", r"/v1/employees/synth/profiles/clearance/?$", is_regex=True
-)
-@api_handler
-def get_employees_by_clearance_blank_synth_v1(event, context):
-    """
-    Handle requests to the synth clearance profiles endpoint missing a clearance status.
-    Raises:
-        ValueError: Always, as clearance status is a required path parameter.
-    """
-    err = ValueError("Clearance Status is Missing.")
-    err.add_note(
-        "Clearance Status is required, e.g. /v1/employees/synth/profiles/clearance/active"
-    )
-    raise err
-
-
-@router.route(
-    "GET",
-    r"/v1/employees/synth/profiles/clearance/(?P<status>[^/]+)",
-    is_regex=True,
-)
-@api_handler
-def get_employees_by_clearance_synth_v1(event, context):
-    """
-    Retrieve employees filtered by their clearance status, from the synth database.
-
-    Args:
-        event: Lambda event containing 'status' path parameter and optional query params
-               for pagination and sorting.
-        context: Lambda context.
-
-    Returns:
-        Dict containing metadata and the list of matching employees.
-    """
-    status = LambdaUtils.get_path_param(event, "status")
-    query_params = LambdaUtils.get_all_query_params(event)
-
-    if not status:
-        raise ValueError("Clearance status is required.")
-
-    page = PaginationModel(
-        limit=int(query_params.get("limit", settings.DEFAULT_PAGE_SIZE)),
-        cursor=query_params.get("cursor"),
-    )
-    sort = SortModel(
-        field=query_params.get("sortField", "LAST_NAME"),
-        order=query_params.get("sortOrder", "asc"),
-    )
-    columns = LambdaUtils.get_columns_query_parameter(event)
-
-    results = get_employees_by_clearance(
-        clearance_status=status, page=page, sort=sort, columns=columns
-    )
-
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
-
-    return response.model_dump(by_alias=True)
-
-
-@router.route("GET", r"/v1/employees/synth/profiles/?$", is_regex=True)
-@api_handler
-def get_employee_profile_blank_synth_v1(event, context):
-    """Handle requests to the synth employee profiles endpoint missing an employee id."""
-    err = ValueError("Employee ID is Missing.")
-    err.add_note("Employee ID is required, e.g. /v1/employees/synth/profiles/12345")
-    raise err
-
-
-@router.route(
-    "GET",
-    r"/v1/employees/synth/profiles/(?P<empl_id>[^/]+)",
-    is_regex=True,
-)
-@api_handler
-def get_employee_profile_synth_v1(event, context):
-    """
-    Retrieve a single employee's profile by their employee ID, from the synth database.
-
-    Args:
-        event: Lambda event containing 'empl_id' path parameter.
-        context: Lambda context.
-
-    Returns:
-        Dict containing metadata and the employee profile data.
-    """
-    empl_id = LambdaUtils.get_path_param(event, "empl_id")
-    if not empl_id:
-        raise ValueError(
-            "Employee ID is required as path parameter. e.g. /v1/employees/synth/profiles/E12345."
-        )
-    elif empl_id == "search":
-        # Protects for accidental GET when it's more likely they wanted to POST
-        raise ValueError(
-            "Employee ID sent as 'search', did you mean to POST? "
-            "/v1/employees/synth/profiles/search"
-        )
-
-    columns = LambdaUtils.get_columns_query_parameter(event)
-
-    results = get_employee_by_id(empl_id=empl_id, columns=columns)
-
-    if not results.items:
-        raise ResourceNotFoundError(
-            message=f"Employee with ID {empl_id} not found",
-            details={"empl_id": empl_id, "columns": columns},
-        )
-
-    response = V1EmployeeListResponseModel(
-        metadata=V1MetadataModel(**results.metadata.model_dump()),
-        data=[
-            V1EmployeeResponseModel.model_validate(item.model_dump())
-            for item in results.items
-        ],
-    )
-
-    return response.model_dump(by_alias=True)
+        assert body["metadata"]["responseVersion"] == "v1"
