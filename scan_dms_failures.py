@@ -30,6 +30,12 @@ def reset_pool():
 @pytest.fixture
 def mock_settings(mocker):
     settings_mock = mocker.patch("db.connection.settings", autospec=False)
+    # Pool-tuning params are global (shared across all databases).
+    settings_mock.DB_POOL_MAXCONN = 5
+    settings_mock.DB_CONNECT_TIMEOUT_SECONDS = 30
+    settings_mock.DB_STATEMENT_TIMEOUT_MS = 10
+    settings_mock.DEFAULT_PAGE_SIZE = 50
+    # Per-database identity/credentials.
     settings_mock.DATABASES = {
         "mtdm": {
             "dbname": "test_db",
@@ -37,9 +43,6 @@ def mock_settings(mocker):
             "password": "test_password",
             "host": "test_host",
             "port": 5432,
-            "connect_timeout": 30,
-            "statement_timeout_ms": 10,
-            "maxconn": 5,
         },
         "mtdm_synth": {
             "dbname": "test_synth_db",
@@ -47,12 +50,8 @@ def mock_settings(mocker):
             "password": "test_synth_password",
             "host": "test_synth_host",
             "port": 5432,
-            "connect_timeout": 30,
-            "statement_timeout_ms": 10,
-            "maxconn": 5,
         },
     }
-    settings_mock.DEFAULT_PAGE_SIZE = 50
     return settings_mock
 
 
@@ -139,13 +138,18 @@ def test_get_pool_multiple_databases_are_independent(mock_settings, mocker):
 def test_get_pool_unknown_database(mock_settings, mocker):
     mocker.patch("db.connection.pool.SimpleConnectionPool")
 
-    with pytest.raises(DatabaseConnectionError, match="Unknown database"):
+    # An unrecognized db_name means settings.DATABASES[db_name] raises KeyError,
+    # which should be caught and re-raised as the standard connection error
+    # rather than leaking a raw KeyError.
+    with pytest.raises(
+        DatabaseConnectionError, match="Could not connect to the database cluster."
+    ):
         get_pool("not_a_real_db")
 
 
 def test_get_pool_no_maxconn(mock_settings, mocker):
-    # Delete the maxconn setting to test the fallback behavior
-    del mock_settings.DATABASES["mtdm"]["maxconn"]
+    # Delete the global maxconn setting to test the fallback behavior
+    del mock_settings.DB_POOL_MAXCONN
     mock_simple_pool = mocker.patch("db.connection.pool.SimpleConnectionPool")
 
     get_pool("mtdm")
