@@ -1,209 +1,195 @@
-# tests/unit/db/test_employee_profile_synth_repo.py
-from unittest.mock import Mock, patch
+# tests/unit/domain/services/test_employee_profile_synth_service.py
+from unittest.mock import patch
 
 import pytest
-from db.repositories import employee_profile_synth_repo
-from v1.schemas import FilterOps, FiltersEnvelope, PaginationModel, SortModel
+from domain.services import employee_profile_synth_service as employee_profile_service
+from v1.schemas import PaginationModel
 
 
-class TestEmployeeProfileSynthRepo:
-    """Test suite for synth employee profile repository"""
+class TestEmployeeProfileSynthService:
+    """Test suite for synth employee profile service"""
 
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employee_profiles_basic(self, mock_execute):
-        """Test basic synth employee profile search"""
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_get_all_employees(self, mock_repo):
+        """Test getting all synth employees"""
         # Arrange
-        mock_execute.return_value = {
-            "items": [
-                {
-                    "EMPL_ID": "12345",
-                    "FIRST_NAME": "John",
-                    "LAST_NAME": "Doe",
-                    "DEPT_NAME": "Engineering",
-                    "ORG_ID": "MT-CTO",
-                }
-            ]
+        mock_repo.get_employee_profiles.return_value = {
+            "items": [{"empl_id": "12345", "first_name": "John", "last_name": "Doe"}],
+            "page": {"cursor": None, "has_more": False},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employee_profiles(
-            filters=FiltersEnvelope(filters={}), page=PaginationModel(limit=10)
-        )
+        result = employee_profile_service.get_all_employees()
 
         # Assert
-        assert len(result["items"]) == 1
-        assert result["items"][0]["EMPL_ID"] == "12345"
-        assert result["items"][0]["FIRST_NAME"] == "John"
-        mock_execute.assert_called_once()
+        assert len(result.items) == 1
+        assert result.items[0].empl_id == "12345"
+        assert result.items[0].first_name == "John"
+        assert result.items[0].last_name == "Doe"
+        assert result.metadata.has_more is False
+        assert result.metadata.cursor is None
 
-        # Confirm this repo always routes to the synth database
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
+        mock_repo.get_employee_profiles.assert_called_once()
 
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employee_profiles_with_dept_filter(self, mock_execute):
-        """Test synth employee search with department filter"""
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    @pytest.mark.parametrize("columns", [None, ["first_name", "last_name"]])
+    def test_get_employee_by_id(self, mock_repo, columns):
+        """Test getting synth employee by ID"""
         # Arrange
-        mock_execute.return_value = {
-            "items": [
-                {"employeeId": "12345", "departmentName": "Engineering"},
-                {"employeeId": "67890", "departmentName": "Engineering"},
-            ]
-        }
-
-        filters = FiltersEnvelope(
-            filters={"departmentName": FilterOps(eq="Engineering")}
-        )
-
-        # Act
-        result = employee_profile_synth_repo.get_employee_profiles(
-            filters=filters, page=PaginationModel(limit=10)
-        )
-
-        # Assert
-        assert len(result["items"]) == 2
-        assert all(
-            item["departmentName"] == "Engineering" for item in result["items"]
-        )
-
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
-
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employee_by_id(self, mock_execute):
-        """Test getting single synth employee by ID"""
-        # Arrange
-        mock_execute.return_value = {
-            "items": [{"EMPL_ID": "12345", "FIRST_NAME": "John", "LAST_NAME": "Doe"}]
+        mock_repo.get_employee_profile_by_id.return_value = {
+            "items": [{"empl_id": "12345", "first_name": "John", "last_name": "Doe"}],
+            "page": {"cursor": None, "has_more": False},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employee_profile_by_id("12345")
+        result = employee_profile_service.get_employee_by_id("12345", columns=columns)
 
         # Assert
-        assert len(result["items"]) == 1
-        assert result["items"][0]["EMPL_ID"] == "12345"
+        assert len(result.items) == 1
+        assert result.items[0].empl_id == "12345"
+        assert result.items[0].first_name == "John"
+        assert result.items[0].last_name == "Doe"
+        assert result.metadata.has_more is False
+        assert result.metadata.cursor is None
 
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
+        mock_repo.get_employee_profile_by_id.assert_called_once_with(
+            empl_id="12345", columns=columns
+        )
 
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employee_by_id_not_found(self, mock_execute):
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_get_employee_by_id_not_found(self, mock_repo):
         """Test getting synth employee that doesn't exist"""
         # Arrange
-        mock_execute.return_value = {"items": []}
-
-        # Act
-        result = employee_profile_synth_repo.get_employee_profile_by_id("99999")
-
-        # Assert
-        assert len(result["items"]) == 0
-        assert result["page"]["has_more"] is False
-
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employees_by_manager(self, mock_execute):
-        """Test getting direct reports for a manager in synth"""
-        # Arrange
-        mock_execute.return_value = {
-            "items": [
-                {"EMPL_ID": "11111", "MGR_EMPL_ID": "12345"},
-                {"EMPL_ID": "22222", "MGR_EMPL_ID": "12345"},
-                {"EMPL_ID": "33333", "MGR_EMPL_ID": "12345"},
-            ]
+        mock_repo.get_employee_profile_by_id.return_value = {
+            "items": [],
+            "page": {"cursor": None, "has_more": False},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employees_by_manager("12345")
+        result = employee_profile_service.get_employee_by_id("99999")
 
         # Assert
-        assert len(result["items"]) == 3
-        assert all(item["MGR_EMPL_ID"] == "12345" for item in result["items"])
+        assert len(result.items) == 0
+        mock_repo.get_employee_profile_by_id.assert_called_once_with(
+            empl_id="99999", columns=None
+        )
 
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
-
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employees_by_org(self, mock_execute):
-        """Test getting synth employees by organization"""
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_get_direct_reports(self, mock_repo):
+        """Test getting synth direct reports for a manager"""
         # Arrange
-        mock_execute.return_value = {
+        mock_repo.get_employees_by_manager.return_value = {
             "items": [
-                {"EMPL_ID": "11111", "ORG_ID": "MT-CTO"},
-                {"EMPL_ID": "22222", "ORG_ID": "MT-CTO"},
-            ]
+                {"empl_id": "11111", "mgr_empl_id": "12345"},
+                {"empl_id": "22222", "mgr_empl_id": "12345"},
+            ],
+            "page": {"cursor": None, "has_more": False},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employees_by_org("MT-CTO")
+        result = employee_profile_service.get_direct_reports("12345")
 
         # Assert
-        assert len(result["items"]) == 2
-        assert all(item["ORG_ID"] == "MT-CTO" for item in result["items"])
+        assert len(result.items) == 2
+        assert result.items[0].empl_id == "11111"
+        assert result.items[0].mgr_empl_id == "12345"
+        assert result.items[1].empl_id == "22222"
+        assert result.items[1].mgr_empl_id == "12345"
 
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
+        mock_repo.get_employees_by_manager.assert_called_once()
 
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_get_employees_by_clearance(self, mock_execute):
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_get_employees_in_org(self, mock_repo):
+        """Test getting synth employees in organization"""
+        # Arrange
+        mock_repo.get_employees_by_org.return_value = {
+            "items": [
+                {"empl_id": "11111", "org_id": "01.525.146.10"},
+                {"empl_id": "22222", "org_id": "01.525.146.10"},
+            ],
+            "page": {"cursor": None, "has_more": False},
+        }
+
+        # Act
+        result = employee_profile_service.get_employees_in_org("01.525.146.10")
+
+        # Assert
+        assert len(result.items) == 2
+
+        # Check that the repo was called (don't check exact parameters since service sets defaults)
+        mock_repo.get_employees_by_org.assert_called_once()
+
+        # Verify the call had the correct org_id
+        call_args = mock_repo.get_employees_by_org.call_args
+        assert call_args.kwargs["org_id"] == "01.525.146.10"
+
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_get_employees_by_clearance(self, mock_repo):
         """Test getting synth employees by clearance status"""
         # Arrange
-        mock_execute.return_value = {
-            "items": [
-                {"EMPL_ID": "11111", "clearance_status": "Active"},
-                {"EMPL_ID": "22222", "clearance_status": "Active"},
-            ]
+        mock_repo.get_employees_by_clearance.return_value = {
+            "items": [{"empl_id": "11111", "clearance_status": "Active"}],
+            "page": {"cursor": None, "has_more": False},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employees_by_clearance("Active")
+        result = employee_profile_service.get_employees_by_clearance("Active")
 
         # Assert
-        assert len(result["items"]) == 2
-        assert all(
-            item["clearance_status"] == "Active" for item in result["items"]
-        )
+        assert len(result.items) == 1
+        assert result.items[0].clearance_status == "Active"
 
-        _, call_kwargs = mock_execute.call_args
-        assert call_kwargs.get("db_key") == "synth"
-
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_pagination_has_more(self, mock_execute):
-        """Test pagination with has_more flag on synth data"""
-        # Arrange - Return limit+1 items to trigger has_more
-        mock_execute.return_value = {
-            "items": [
-                {"EMPL_ID": f"{i:05d}"} for i in range(11)  # 11 items for limit=10
-            ]
-        }
-
-        # Act
-        result = employee_profile_synth_repo.get_employee_profiles(
-            page=PaginationModel(limit=10)
-        )
-
-        # Assert
-        assert len(result["items"]) == 10  # Should trim to limit
-        assert result["page"]["has_more"] is True
-        assert result["page"]["cursor"] is not None
-
-    @patch("db.repositories.employee_profile_synth_repo.execute_query")
-    def test_sorting(self, mock_execute):
-        """Test sorting by last name on synth data"""
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_service_with_filters(self, mock_repo):
+        """Test synth service with simple filters"""
         # Arrange
-        mock_execute.return_value = {
+        mock_repo.get_employee_profiles.return_value = {
             "items": [
-                {"EMPL_ID": "1", "LAST_NAME": "Adams"},
-                {"EMPL_ID": "2", "LAST_NAME": "Baker"},
-                {"EMPL_ID": "3", "LAST_NAME": "Carter"},
-            ]
+                {
+                    "empl_id": "12345",
+                    "dept_name": "Engineering",
+                    "org_id": "01.525.146.10",
+                }
+            ],
+            "page": {"cursor": None, "has_more": False},
+        }
+
+        filters = {"dept_name": {"eq": "Engineering"}}
+
+        # Act
+        result = employee_profile_service.get_all_employees(filters=filters)
+
+        # Assert
+        assert len(result.items) == 1
+        assert result.items[0].empl_id == "12345"
+
+        mock_repo.get_employee_profiles.assert_called_once()
+
+    @patch("domain.services.employee_profile_synth_service.employee_profile_repo")
+    def test_service_with_pagination(self, mock_repo):
+        """Test synth service with pagination metadata and global items count"""
+        page_limitation_count = 10
+        total_desired_items = 101
+
+        # Arrange: Mock exactly what the repository layer returns when
+        # hitting a database that holds 101 records total.
+        mock_repo.get_employee_profiles.return_value = {
+            # The DB only pulls the requested page limit (10 items)
+            "items": [{"empl_id": f"{i:05d}"} for i in range(page_limitation_count)],
+            # The DB calculates the overall matching dataset size (101 items)
+            "total_count": total_desired_items,
+            "page": {"cursor": "abc123", "has_more": True},
         }
 
         # Act
-        result = employee_profile_synth_repo.get_employee_profiles(
-            sort=SortModel(field="LAST_NAME", order="asc"),
-            page=PaginationModel(limit=10),
+        result = employee_profile_service.get_all_employees(
+            page=PaginationModel(limit=page_limitation_count)
         )
 
         # Assert
-        assert result["items"][0]["LAST_NAME"] == "Adams"
-        assert result["items"][2]["LAST_NAME"] == "Carter"
+        # Verify this specific response payload only holds the sliced page
+        assert len(result.items) == page_limitation_count
+
+        # Verify cursor state
+        assert result.metadata.has_more is True
+        assert result.metadata.cursor == "abc123"
