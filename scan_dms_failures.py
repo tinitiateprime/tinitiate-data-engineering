@@ -1,3 +1,6 @@
+"""
+main-function/tests/unit/db/test_connection.py
+"""
 from unittest.mock import MagicMock, patch
 
 import db.connection as conn_module
@@ -21,37 +24,28 @@ from psycopg2 import pool
 
 @pytest.fixture(autouse=True)
 def reset_pool():
-    """Ensures the per-database connection pool cache is reset between tests."""
-    conn_module._pools = {}
+    """Ensures the global connection pool cache is reset between tests."""
+    conn_module._pools.clear()
     yield
-    conn_module._pools = {}
+    conn_module._pools.clear()
 
 
 @pytest.fixture
 def mock_settings(mocker):
     settings_mock = mocker.patch("db.connection.settings", autospec=False)
-    # Pool-tuning params are global (shared across all databases).
-    settings_mock.DB_POOL_MAXCONN = 5
-    settings_mock.DB_CONNECT_TIMEOUT_SECONDS = 30
-    settings_mock.DB_STATEMENT_TIMEOUT_MS = 10
-    settings_mock.DEFAULT_PAGE_SIZE = 50
-    # Per-database identity/credentials.
     settings_mock.DATABASES = {
-        "mtdm": {
+        "default": {
             "dbname": "test_db",
             "user": "test_user",
             "password": "test_password",
             "host": "test_host",
             "port": 5432,
-        },
-        "mtdm_synth": {
-            "dbname": "test_synth_db",
-            "user": "test_synth_user",
-            "password": "test_synth_password",
-            "host": "test_synth_host",
-            "port": 5432,
-        },
+        }
     }
+    settings_mock.DB_POOL_MAXCONN = 5
+    settings_mock.DB_CONNECT_TIMEOUT_SECONDS = 30
+    settings_mock.DB_STATEMENT_TIMEOUT_MS = 10
+    settings_mock.DEFAULT_PAGE_SIZE = 50
     return settings_mock
 
 
@@ -60,7 +54,7 @@ def test_get_pool_success(mock_settings, mocker):
     mock_instance = MagicMock()
     mock_simple_pool.return_value = mock_instance
 
-    p = get_pool("mtdm")
+    p = get_pool()
 
     assert p == mock_instance
     mock_simple_pool.assert_called_once_with(
@@ -75,86 +69,21 @@ def test_get_pool_success(mock_settings, mocker):
         options="-c statement_timeout=10",
     )
 
-    # Second call for the same db should return the same cached pool
-    p2 = get_pool("mtdm")
+    # Second call should return the same cached pool
+    p2 = get_pool()
     assert p2 == p
     assert mock_simple_pool.call_count == 1
 
 
-def test_get_pool_defaults_to_mtdm(mock_settings, mocker):
-    """Calling get_pool() with no argument should resolve to the mtdm database."""
-    mock_simple_pool = mocker.patch("db.connection.pool.SimpleConnectionPool")
-    mock_instance = MagicMock()
-    mock_simple_pool.return_value = mock_instance
-
-    p = get_pool()
-
-    assert p == mock_instance
-    assert mock_simple_pool.call_args[1]["dbname"] == "test_db"
-
-
-def test_get_pool_synth_uses_synth_settings(mock_settings, mocker):
-    mock_simple_pool = mocker.patch("db.connection.pool.SimpleConnectionPool")
-    mock_instance = MagicMock()
-    mock_simple_pool.return_value = mock_instance
-
-    p = get_pool("mtdm_synth")
-
-    assert p == mock_instance
-    mock_simple_pool.assert_called_once_with(
-        minconn=1,
-        maxconn=5,
-        dbname="test_synth_db",
-        user="test_synth_user",
-        password="test_synth_password",
-        host="test_synth_host",
-        port=5432,
-        connect_timeout=30,
-        options="-c statement_timeout=10",
-    )
-
-
-def test_get_pool_multiple_databases_are_independent(mock_settings, mocker):
-    """mtdm and mtdm_synth pools should be created and cached independently."""
-    mock_simple_pool = mocker.patch("db.connection.pool.SimpleConnectionPool")
-    mock_mtdm_instance = MagicMock()
-    mock_synth_instance = MagicMock()
-    mock_simple_pool.side_effect = [mock_mtdm_instance, mock_synth_instance]
-
-    p_mtdm = get_pool("mtdm")
-    p_synth = get_pool("mtdm_synth")
-
-    assert p_mtdm == mock_mtdm_instance
-    assert p_synth == mock_synth_instance
-    assert p_mtdm != p_synth
-    assert mock_simple_pool.call_count == 2
-
-    # Re-requesting either should hit the cache, not create a new pool
-    assert get_pool("mtdm") == p_mtdm
-    assert get_pool("mtdm_synth") == p_synth
-    assert mock_simple_pool.call_count == 2
-
-
-def test_get_pool_unknown_database(mock_settings, mocker):
-    mocker.patch("db.connection.pool.SimpleConnectionPool")
-
-    # An unrecognized db_name means settings.DATABASES[db_name] raises KeyError,
-    # which should be caught and re-raised as the standard connection error
-    # rather than leaking a raw KeyError.
-    with pytest.raises(
-        DatabaseConnectionError, match="Could not connect to the database cluster."
-    ):
-        get_pool("not_a_real_db")
-
-
 def test_get_pool_no_maxconn(mock_settings, mocker):
-    # Delete the global maxconn setting to test the fallback behavior
+    # Delete the maxconn setting to test the fallback behavior
     del mock_settings.DB_POOL_MAXCONN
     mock_simple_pool = mocker.patch("db.connection.pool.SimpleConnectionPool")
 
-    get_pool("mtdm")
+    get_pool()
 
     # Assert maxconn defaults to 10
+    mock_simple_pool.assert_called_once()
     assert mock_simple_pool.call_args[1]["maxconn"] == 10
 
 
@@ -166,20 +95,13 @@ def test_get_pool_exception(mock_settings, mocker):
     with pytest.raises(
         DatabaseConnectionError, match="Could not connect to the database cluster."
     ):
-        get_pool("mtdm")
+        get_pool()
 
 
 @pytest.fixture
 def mock_pool_instance(mocker):
     mock_pool = MagicMock()
-    conn_module._pools = {"mtdm": mock_pool}
-    return mock_pool
-
-
-@pytest.fixture
-def mock_synth_pool_instance(mocker):
-    mock_pool = MagicMock()
-    conn_module._pools["mtdm_synth"] = mock_pool
+    conn_module._pools["default"] = mock_pool
     return mock_pool
 
 
@@ -195,21 +117,6 @@ def test_get_db_connection_success(mock_pool_instance):
     mock_pool_instance.putconn.assert_called_once_with(mock_conn)
 
 
-def test_get_db_connection_uses_requested_database(
-    mock_pool_instance, mock_synth_pool_instance
-):
-    mock_conn = MagicMock()
-    mock_conn.closed = 0
-    mock_conn.get_transaction_status.return_value = TS_IDLE
-    mock_synth_pool_instance.getconn.return_value = mock_conn
-
-    with get_db_connection("mtdm_synth") as conn:
-        assert conn == mock_conn
-
-    mock_synth_pool_instance.putconn.assert_called_once_with(mock_conn)
-    mock_pool_instance.getconn.assert_not_called()
-
-
 def test_get_db_connection_closed(mock_pool_instance):
     mock_conn_closed = MagicMock()
     mock_conn_closed.closed = 1
@@ -218,6 +125,7 @@ def test_get_db_connection_closed(mock_pool_instance):
     mock_conn_open.closed = 0
     mock_conn_open.get_transaction_status.return_value = TS_IDLE
 
+    # getconn() returns closed first, then open
     mock_pool_instance.getconn.side_effect = [mock_conn_closed, mock_conn_open]
 
     with get_db_connection() as conn:
@@ -442,25 +350,6 @@ def test_execute_query_generic_exception(mock_db_context):
         execute_query("SELECT 1")
 
 
-def test_execute_query_uses_requested_database(mocker):
-    mock_conn_ctx = MagicMock()
-    mock_conn = MagicMock()
-    mock_conn_ctx.__enter__.return_value = mock_conn
-    mock_get_db_connection = mocker.patch(
-        "db.connection.get_db_connection", return_value=mock_conn_ctx
-    )
-
-    mock_cur = MagicMock()
-    mock_cur.description = None
-    mock_conn_cursor_ctx = MagicMock()
-    mock_conn_cursor_ctx.__enter__.return_value = mock_cur
-    mock_conn.cursor.return_value = mock_conn_cursor_ctx
-
-    execute_query("SELECT 1", db_name="mtdm_synth")
-
-    mock_get_db_connection.assert_called_once_with("mtdm_synth")
-
-
 def test_ping_db_success(mock_db_context):
     mock_cur = MagicMock()
     mock_conn_cursor_ctx = MagicMock()
@@ -556,22 +445,3 @@ def test_ping_db_extended_no_retries(mock_db_context):
 
     res = ping_db_extended(retries=0)
     assert res == {}
-
-
-def test_ping_db_extended_uses_requested_database(mocker):
-    mock_conn_ctx = MagicMock()
-    mock_conn = MagicMock()
-    mock_conn_ctx.__enter__.return_value = mock_conn
-    mock_get_db_connection = mocker.patch(
-        "db.connection.get_db_connection", return_value=mock_conn_ctx
-    )
-
-    mock_cur = MagicMock()
-    mock_cur.fetchone.return_value = ("db1", 10, 2, 8, 0, "00:00:01")
-    mock_conn_cursor_ctx = MagicMock()
-    mock_conn_cursor_ctx.__enter__.return_value = mock_cur
-    mock_conn.cursor.return_value = mock_conn_cursor_ctx
-
-    ping_db_extended(db_name="mtdm_synth")
-
-    mock_get_db_connection.assert_called_once_with("mtdm_synth")
