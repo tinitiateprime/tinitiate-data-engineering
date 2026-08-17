@@ -1,3 +1,7 @@
-git diff --name-only origin/main...origin/kp-api-changes
+Get-ChildItem main-function\tests\unit -Recurse -File |
+Select-Object -ExpandProperty FullName
 
-git diff --stat origin/main...origin/kp-api-changes
+Get-ChildItem main-function\tests\unit -Recurse -File |
+Where-Object { $_.Name -match "ar_history|gl_details|financials_updated|non_labor|period_target|po_funding|po_open|project_status|real_time|timesheet|voucher" } |
+Select-Object -ExpandProperty FullName
+
