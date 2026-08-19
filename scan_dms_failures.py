@@ -1,39 +1,344 @@
-"""
-generate_api_tests.py
+# api_test_config.py
 
-Generic unit-test generator for the MT-DM API project.
+from pathlib import Path
 
-The generator uses the existing project_financial tests as templates and
-creates tests for APIs defined in api_test_config.py.
 
-Examples
---------
-List configured APIs:
+# ============================================================
+# ROOT DIRECTORIES
+# ============================================================
 
-    py generate_api_tests.py --list
+API_ROOT = Path(__file__).resolve().parent
 
-Dry run:
+MAIN_FUNCTION_ROOT = API_ROOT / "main-function"
 
-    py generate_api_tests.py po_funding_detail --dry-run
+TEST_ROOT = (
+    MAIN_FUNCTION_ROOT
+    / "tests"
+    / "unit"
+)
 
-Generate:
 
-    py generate_api_tests.py po_funding_detail
+# ============================================================
+# TEST TYPES
+# ============================================================
 
-Overwrite existing generated tests:
+TEST_TYPES = (
+    "db",
+    "model",
+    "service",
+    "handler",
+)
 
-    py generate_api_tests.py po_funding_detail --force
 
-Generate only one test type:
+# ============================================================
+# PROJECT FINANCIAL TEMPLATE FILES
+#
+# These are the known-good tests that are used as templates.
+# ============================================================
 
-    py generate_api_tests.py po_funding_detail --test-type service --force
+TEMPLATE_FILES = {
+    "db": (
+        TEST_ROOT
+        / "db"
+        / "test_project_financial_repo.py"
+    ),
 
-Valid test types:
-    db
-    model
-    service
-    handler
-"""
+    "model": (
+        TEST_ROOT
+        / "domain"
+        / "models"
+        / "test_project_financial.py"
+    ),
+
+    "service": (
+        TEST_ROOT
+        / "domain"
+        / "services"
+        / "test_project_financial_service.py"
+    ),
+
+    "handler": (
+        TEST_ROOT
+        / "v1"
+        / "test_project_financial.py"
+    ),
+}
+
+
+# ============================================================
+# DESTINATION DIRECTORIES
+# ============================================================
+
+DESTINATION_DIRS = {
+    "db": (
+        TEST_ROOT
+        / "db"
+    ),
+
+    "model": (
+        TEST_ROOT
+        / "domain"
+        / "models"
+    ),
+
+    "service": (
+        TEST_ROOT
+        / "domain"
+        / "services"
+    ),
+
+    "handler": (
+        TEST_ROOT
+        / "v1"
+    ),
+}
+
+
+# ============================================================
+# TEMPLATE BASE INFORMATION
+#
+# This tells the generator what names belong to the
+# Project Financial template.
+# ============================================================
+
+TEMPLATE_BASE = {
+    "module_name": "project_financial",
+
+    "plural_name": "project_financials",
+
+    "route_name": "project-financials",
+
+    "class_name": "ProjectFinancial",
+
+    "repository_module": "project_financial_repo",
+
+    "service_module": "project_financial_service",
+
+    # Search service/repository function
+    "search_function": "search_project_financial",
+
+    # Key lookup service/repository function
+    "lookup_function": "get_project_financial_by_project_id",
+
+    # Handler functions
+    "search_handler": "search_project_financials_v1",
+
+    "lookup_handler": "get_project_financial_details",
+
+    "key_column": "project_id",
+
+    "sample_key": "P-1001",
+
+    "sample_field": "customer_name",
+
+    "sample_value": "Test Customer",
+}
+
+
+# ============================================================
+# API CONFIGURATION
+#
+# ADD FUTURE APIs HERE.
+#
+# You should NOT need to modify generate_api_tests.py.
+# ============================================================
+
+APIS = {
+
+    # ========================================================
+    # PO FUNDING DETAIL
+    # ========================================================
+
+    "po_funding_detail": {
+
+        # ----------------------------------------------------
+        # Naming
+        # ----------------------------------------------------
+
+        "module_name": "po_funding_detail",
+
+        "plural_name": "po_funding_details",
+
+        "route_name": "po-funding-detail",
+
+        "class_name": "PoFundingDetail",
+
+        # ----------------------------------------------------
+        # Source object
+        # ----------------------------------------------------
+
+        "source_view": "po_funding_detail_vw",
+
+        # ----------------------------------------------------
+        # Primary/key column
+        # ----------------------------------------------------
+
+        "key_column": "project_id",
+
+        "sample_key": "P-1001",
+
+        # ----------------------------------------------------
+        # Sample field used by tests
+        # ----------------------------------------------------
+
+        "sample_field": "vendor_name",
+
+        "sample_value": "Test Vendor",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+
+        "repository_module": "po_funding_detail_repo",
+
+        "search_function": "get_po_funding_detail",
+
+        "lookup_function": "get_po_funding_detail_by_project_id",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+
+        "service_module": "po_funding_detail_service",
+
+        "service_search_function": "search_po_funding_detail",
+
+        "service_lookup_function": "get_po_funding_detail_by_project",
+
+        # ----------------------------------------------------
+        # Handler
+        #
+        # IMPORTANT:
+        # These names must match the REAL functions in:
+        #
+        # mt-dm-lambda-src/v1/handlers/po_funding_detail.py
+        #
+        # From your screenshots the search handler is:
+        #
+        # search_po_funding_detail_v1
+        #
+        # ----------------------------------------------------
+
+        "handler_module": "po_funding_detail",
+
+        "search_handler": "search_po_funding_detail_v1",
+
+        # Change this ONLY if your actual handler has a
+        # different function name.
+        "lookup_handler": "get_po_funding_detail_by_project_v1",
+
+        # ----------------------------------------------------
+        # Defaults used by generated tests
+        # ----------------------------------------------------
+
+        "default_sort_field": "order_date",
+
+        "default_sort_order": "desc",
+
+        "default_page_size": 100,
+
+        # ----------------------------------------------------
+        # Test data
+        # ----------------------------------------------------
+
+        "sample_record": {
+            "project_id": "P-1001",
+            "vendor_name": "Test Vendor",
+        },
+
+        # ----------------------------------------------------
+        # Extra direct replacements
+        #
+        # Normally this can remain empty.
+        # Add entries only for unusual APIs.
+        # ----------------------------------------------------
+
+        "replacements": {
+        },
+    },
+
+
+    # ========================================================
+    # GL DETAILS
+    #
+    # Keep this if you want to test it later.
+    # ========================================================
+
+    "gl_details": {
+
+        "module_name": "gl_details",
+
+        "plural_name": "gl_details",
+
+        "route_name": "gl-details",
+
+        "class_name": "GlDetails",
+
+        "source_view": "gl_details_vw",
+
+        "key_column": "proj_id",
+
+        "sample_key": "1001",
+
+        "sample_field": "description",
+
+        "sample_value": "Test GL Detail",
+
+        "repository_module": "gl_details_repo",
+
+        "search_function": "get_gl_details",
+
+        "lookup_function": "get_gl_details_by_id",
+
+        "service_module": "gl_details_service",
+
+        "service_search_function": "search_gl_details",
+
+        "service_lookup_function": "get_gl_details_by_id",
+
+        "handler_module": "gl_details",
+
+        "search_handler": "search_gl_details_v1",
+
+        "lookup_handler": "get_gl_details_v1",
+
+        "default_sort_field": "proj_id",
+
+        "default_sort_order": "asc",
+
+        "default_page_size": 100,
+
+        "sample_record": {
+            "proj_id": "1001",
+            "description": "Test GL Detail",
+        },
+
+        "replacements": {
+        },
+    },
+}
+
+
+# ============================================================
+# OPTIONAL COMPATIBILITY ALIASES
+#
+# These prevent the import errors you were receiving earlier:
+#
+#   cannot import name TEMPLATE_FILES
+#   cannot import name DESTINATIONS
+#
+# ============================================================
+
+TEMPLATES = TEMPLATE_FILES
+
+DESTINATIONS = DESTINATION_DIRS
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+# generate_api_tests.py
 
 from __future__ import annotations
 
@@ -41,53 +346,65 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Iterable, Optional
+
+
+from api_test_config import (
+    APIS,
+    TEMPLATE_BASE,
+    TEMPLATE_FILES,
+    DESTINATION_DIRS,
+    TEST_TYPES,
+)
 
 
 # ============================================================
-# CONFIG IMPORTS
+# CONSTANTS
 # ============================================================
 
-try:
-    from api_test_config import (
-        APIS,
-        TEMPLATE_FILES,
-        DESTINATION_DIRS,
-        TEST_TYPES,
-    )
-except ImportError as exc:
-    print()
-    print("ERROR: Unable to import api_test_config.py")
-    print()
-    print(exc)
-    print()
-    print(
-        "Expected api_test_config.py to contain:"
-    )
-    print(
-        "  APIS"
-    )
-    print(
-        "  TEMPLATE_FILES"
-    )
-    print(
-        "  DESTINATION_DIRS"
-    )
-    print(
-        "  TEST_TYPES"
-    )
-    print()
-    sys.exit(1)
+VALID_TEST_TYPES = set(TEST_TYPES)
 
 
 # ============================================================
 # GENERAL HELPERS
 # ============================================================
 
+def normalize_api_name(value: str) -> str:
+    """
+    Normalize API name supplied on command line.
+
+    Example:
+        po-funding-detail
+        PO Funding Detail
+        po_funding_detail
+
+    all become:
+
+        po_funding_detail
+    """
+
+    value = value.strip().lower()
+
+    value = re.sub(
+        r"[\s\-]+",
+        "_",
+        value,
+    )
+
+    value = re.sub(
+        r"_+",
+        "_",
+        value,
+    )
+
+    return value.strip("_")
+
+
 def snake_to_pascal(value: str) -> str:
     """
     po_funding_detail -> PoFundingDetail
     """
+
     return "".join(
         part.capitalize()
         for part in value.split("_")
@@ -97,11 +414,9 @@ def snake_to_pascal(value: str) -> str:
 
 def snake_to_title(value: str) -> str:
     """
-    po_funding_detail -> PO Funding Detail-like title.
-
-    We do not force acronym capitalization here because
-    API-specific display names may be supplied in config.
+    po_funding_detail -> Po Funding Detail
     """
+
     return " ".join(
         part.capitalize()
         for part in value.split("_")
@@ -109,1153 +424,138 @@ def snake_to_title(value: str) -> str:
     )
 
 
-def normalize_path(value: Any) -> Path:
-    """
-    Convert config path value into pathlib.Path.
-    """
-    if isinstance(value, Path):
-        return value
-
-    return Path(str(value))
+def ensure_parent(path: Path) -> None:
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
-def get_config_value(
-    api_config: Dict[str, Any],
-    name: str,
-    default: Any = None,
-) -> Any:
-    """
-    Safely retrieve one API config value.
-    """
-    value = api_config.get(name)
+def read_text(path: Path) -> str:
+    return path.read_text(
+        encoding="utf-8",
+    )
+
+
+def write_text(
+    path: Path,
+    content: str,
+) -> None:
+
+    ensure_parent(path)
+
+    path.write_text(
+        content,
+        encoding="utf-8",
+    )
+
+
+# ============================================================
+# CONFIG VALIDATION
+# ============================================================
+
+def require_config_value(
+    api_name: str,
+    config: dict,
+    key: str,
+) -> object:
+
+    if key not in config:
+        raise ValueError(
+            f"API '{api_name}' is missing required "
+            f"configuration value: {key}"
+        )
+
+    value = config[key]
 
     if value is None:
-        return default
+        raise ValueError(
+            f"API '{api_name}' has None for required "
+            f"configuration value: {key}"
+        )
 
     return value
 
 
-def clean_blank_lines(source: str) -> str:
-    """
-    Avoid huge blocks of empty lines after substitutions.
-    """
-    source = re.sub(
-        r"\n[ \t]+\n",
-        "\n\n",
-        source,
-    )
-
-    source = re.sub(
-        r"\n{4,}",
-        "\n\n\n",
-        source,
-    )
-
-    return source
-
-
-# ============================================================
-# API CONFIG
-# ============================================================
-
-def prepare_api_config(
+def validate_api_config(
     api_name: str,
-    raw_config: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Build a normalized API configuration.
+    config: dict,
+) -> None:
 
-    Everything that changes from one API to another should
-    come from api_test_config.py.
-    """
-
-    config = dict(raw_config)
-
-    module_name = get_config_value(
-        config,
+    required = [
         "module_name",
-        api_name,
-    )
-
-    plural_name = get_config_value(
-        config,
         "plural_name",
-        module_name,
-    )
-
-    route_name = get_config_value(
-        config,
         "route_name",
-        module_name.replace("_", "-"),
-    )
-
-    pascal_name = get_config_value(
-        config,
-        "pascal_name",
-        snake_to_pascal(module_name),
-    )
-
-    display_name = get_config_value(
-        config,
-        "display_name",
-        snake_to_title(module_name),
-    )
-
-    key_column = get_config_value(
-        config,
-        "key_column",
-        "project_id",
-    )
-
-    key_param = get_config_value(
-        config,
-        "key_param",
-        key_column,
-    )
-
-    key_value = str(
-        get_config_value(
-            config,
-            "sample_key",
-            "P-1001",
-        )
-    )
-
-    source_view = get_config_value(
-        config,
+        "class_name",
         "source_view",
-        module_name,
-    )
-
-    lookup_function = get_config_value(
-        config,
-        "lookup_function",
-        f"get_{module_name}_by_{key_param}",
-    )
-
-    search_function = get_config_value(
-        config,
+        "key_column",
+        "sample_key",
+        "sample_field",
+        "sample_value",
+        "repository_module",
         "search_function",
-        f"search_{plural_name}",
-    )
-
-    details_function = get_config_value(
-        config,
-        "details_function",
-        lookup_function,
-    )
-
-    handler_search_function = get_config_value(
-        config,
-        "handler_search_function",
-        f"search_{plural_name}_v1",
-    )
-
-    handler_details_function = get_config_value(
-        config,
-        "handler_details_function",
-        f"get_{module_name}_details",
-    )
-
-    config.update(
-        {
-            "api_name": api_name,
-            "module_name": module_name,
-            "plural_name": plural_name,
-            "route_name": route_name,
-            "pascal_name": pascal_name,
-            "display_name": display_name,
-            "key_column": key_column,
-            "key_param": key_param,
-            "sample_key": key_value,
-            "source_view": source_view,
-            "lookup_function": lookup_function,
-            "search_function": search_function,
-            "details_function": details_function,
-            "handler_search_function": (
-                handler_search_function
-            ),
-            "handler_details_function": (
-                handler_details_function
-            ),
-        }
-    )
-
-    return config
-
-
-# ============================================================
-# TEMPLATE REPLACEMENTS
-# ============================================================
-
-def build_standard_replacements(
-    api_config: Dict[str, Any],
-) -> Dict[str, str]:
-    """
-    Standard Project Financial -> target API replacements.
-
-    Important:
-    longest strings are replaced first later.
-    """
-
-    module_name = api_config["module_name"]
-    plural_name = api_config["plural_name"]
-    pascal_name = api_config["pascal_name"]
-    route_name = api_config["route_name"]
-    source_view = api_config["source_view"]
-
-    replacements: Dict[str, str] = {
-        # ----------------------------------------------------
-        # PascalCase
-        # ----------------------------------------------------
-        "ProjectFinancials": (
-            pascal_name + "s"
-        ),
-        "ProjectFinancial": (
-            pascal_name
-        ),
-
-        # ----------------------------------------------------
-        # snake_case plural
-        # ----------------------------------------------------
-        "project_financials": (
-            plural_name
-        ),
-
-        # ----------------------------------------------------
-        # snake_case singular
-        # ----------------------------------------------------
-        "project_financial": (
-            module_name
-        ),
-
-        # ----------------------------------------------------
-        # kebab-case route
-        # ----------------------------------------------------
-        "project-financials": (
-            route_name
-        ),
-        "project-financial": (
-            route_name
-        ),
-
-        # ----------------------------------------------------
-        # uppercase
-        # ----------------------------------------------------
-        "PROJECT_FINANCIALS": (
-            plural_name.upper()
-        ),
-        "PROJECT_FINANCIAL": (
-            module_name.upper()
-        ),
-
-        # ----------------------------------------------------
-        # title / readable names
-        # ----------------------------------------------------
-        "Project Financials": (
-            api_config["display_name"]
-        ),
-        "Project Financial": (
-            api_config["display_name"]
-        ),
-
-        # ----------------------------------------------------
-        # source
-        # ----------------------------------------------------
-        "project_financial_vw": (
-            source_view
-        ),
-    }
-
-    return replacements
-
-
-def apply_replacements(
-    source: str,
-    replacements: Dict[str, Any],
-) -> str:
-    """
-    Apply string replacements.
-
-    Longest keys are replaced first to prevent:
-        project_financial
-    from changing part of:
-        project_financials
-    too early.
-    """
-
-    normalized: Dict[str, str] = {}
-
-    for old, new in replacements.items():
-        if old is None:
-            continue
-
-        if new is None:
-            continue
-
-        normalized[str(old)] = str(new)
-
-    for old in sorted(
-        normalized.keys(),
-        key=len,
-        reverse=True,
-    ):
-        source = source.replace(
-            old,
-            normalized[old],
-        )
-
-    return source
-
-
-# ============================================================
-# FUNCTION-NAME REPLACEMENTS
-# ============================================================
-
-def fix_lookup_function_names(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Normalize generated lookup function names.
-
-    Example:
-        po_funding_detail
-
-    Expected repository:
-        get_po_funding_detail_by_project_id
-
-    rather than:
-        get_po_funding_detail(...)
-    """
-
-    module_name = api_config["module_name"]
-    lookup_function = api_config["lookup_function"]
-    key_param = api_config["key_param"]
-
-    generic_candidates = [
-        f"get_{module_name}_by_project_id",
-        f"get_{module_name}_by_proj_id",
-        f"get_{module_name}_by_{key_param}",
+        "lookup_function",
+        "service_module",
+        "service_search_function",
+        "service_lookup_function",
+        "handler_module",
+        "search_handler",
+        "lookup_handler",
     ]
 
-    for candidate in generic_candidates:
-        source = source.replace(
-            candidate,
-            lookup_function,
+    for key in required:
+        require_config_value(
+            api_name,
+            config,
+            key,
         )
-
-    return source
-
-
-def fix_search_function_names(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Normalize search-function names from config.
-    """
-
-    plural_name = api_config["plural_name"]
-    search_function = api_config["search_function"]
-
-    candidates = [
-        f"search_{plural_name}",
-        f"search_{api_config['module_name']}",
-    ]
-
-    for candidate in candidates:
-        source = source.replace(
-            candidate,
-            search_function,
-        )
-
-    return source
 
 
 # ============================================================
-# KEY COLUMN / PARAMETER
+# CONFIG DISPLAY
 # ============================================================
 
-def fix_key_parameter(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Replace project_financial template key references with
-    the API-specific key.
-
-    IMPORTANT:
-    We intentionally work only on known parameter names rather
-    than globally replacing every project_id occurrence.
-    """
-
-    key_param = api_config["key_param"]
-    key_column = api_config["key_column"]
-    sample_key = api_config["sample_key"]
-
-    replacements = {
-        # common test values
-        '"P-1001"': f'"{sample_key}"',
-        "'P-1001'": f"'{sample_key}'",
-
-        # field names
-        '"project_id"': f'"{key_column}"',
-        "'project_id'": f"'{key_column}'",
-
-        # variables
-        "expected_project_id": (
-            f"expected_{key_param}"
-        ),
-    }
-
-    source = apply_replacements(
-        source,
-        replacements,
-    )
-
-    return source
-
-
-# ============================================================
-# NONE-FILTER FIX
-# ============================================================
-
-def fix_none_filter_expectations(
-    source: str,
-) -> str:
-    """
-    Service behavior:
-
-        current_filters = (
-            FiltersEnvelope(filters=filters)
-            if isinstance(filters, dict)
-            else filters
-        )
-
-    Therefore:
-
-        filters=None
-
-    stays None.
-
-    Remove template assertions expecting None to become a
-    FiltersEnvelope.
-    """
-
-    pattern = r"""
-        ^[ \t]*
-        assert[ \t]+
-        isinstance
-        \(
-            [ \t]*
-            kwargs
-            \[
-                ["']filters["']
-            \]
-            [ \t]*,
-            [ \t]*
-            FiltersEnvelope
-            [ \t]*
-        \)
-        [ \t]*$
-    """
-
-    source = re.sub(
-        pattern,
-        "",
-        source,
-        flags=re.MULTILINE | re.VERBOSE,
-    )
-
-    return clean_blank_lines(source)
-
-
-# ============================================================
-# REMOVE UNSUPPORTED KEYWORD ARGUMENT
-# ============================================================
-
-def remove_keyword_argument_from_calls(
-    source: str,
-    function_name: str,
-    argument_name: str,
-) -> str:
-    """
-    Remove a keyword argument from calls to a function.
-
-    This parser intentionally does not use one giant regex.
-    It walks matching function calls and handles nested
-    parentheses.
-
-    Example:
-
-        get_x(
-            project_id="P-1001",
-            filters=None,
-            page=page,
-        )
-
-    can have filters removed without damaging the call.
-    """
-
-    if not function_name:
-        return source
-
-    function_pattern = re.compile(
-        rf"\b{re.escape(function_name)}\s*\("
-    )
-
-    matches = list(
-        function_pattern.finditer(source)
-    )
-
-    if not matches:
-        return source
-
-    output = source
-
-    # reverse order so previous offsets remain valid
-    for match in reversed(matches):
-
-        open_paren = output.find(
-            "(",
-            match.start(),
-        )
-
-        if open_paren < 0:
-            continue
-
-        depth = 0
-        end_paren: Optional[int] = None
-
-        in_single = False
-        in_double = False
-        escaped = False
-
-        for index in range(
-            open_paren,
-            len(output),
-        ):
-
-            char = output[index]
-
-            if escaped:
-                escaped = False
-                continue
-
-            if char == "\\":
-                escaped = True
-                continue
-
-            if (
-                char == "'"
-                and not in_double
-            ):
-                in_single = not in_single
-                continue
-
-            if (
-                char == '"'
-                and not in_single
-            ):
-                in_double = not in_double
-                continue
-
-            if in_single or in_double:
-                continue
-
-            if char == "(":
-                depth += 1
-
-            elif char == ")":
-                depth -= 1
-
-                if depth == 0:
-                    end_paren = index
-                    break
-
-        if end_paren is None:
-            continue
-
-        call_start = match.start()
-
-        call_text = output[
-            call_start:
-            end_paren + 1
-        ]
-
-        line_pattern = rf"""
-            ^[ \t]*
-            {re.escape(argument_name)}
-            [ \t]*=
-            [^\n]*
-            \n?
-        """
-
-        cleaned = re.sub(
-            line_pattern,
-            "",
-            call_text,
-            flags=re.MULTILINE | re.VERBOSE,
-        )
-
-        output = (
-            output[:call_start]
-            + cleaned
-            + output[end_paren + 1:]
-        )
-
-    return output
-
-
-# ============================================================
-# MOCK ASSERTIONS
-# ============================================================
-
-def normalize_repository_mock_assertions(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    The service creates default PaginationModel and SortModel
-    before calling the repository.
-
-    Therefore generated tests should not expect:
-
-        page=None
-        sort=None
-
-    when the actual service sends instantiated objects.
-
-    Use ANY for those defaults in mock assertions.
-    """
-
-    source = re.sub(
-        r"\bpage\s*=\s*None",
-        "page=ANY",
-        source,
-    )
-
-    source = re.sub(
-        r"\bsort\s*=\s*None",
-        "sort=ANY",
-        source,
-    )
-
-    # If the service does not pass filters to the by-key repo,
-    # remove filters expectation for that lookup.
-    if not api_config.get(
-        "lookup_supports_filters",
-        False,
-    ):
-        source = remove_keyword_argument_from_calls(
-            source,
-            (
-                "mock_"
-                + api_config["module_name"]
-                + "_repo."
-                + api_config["lookup_function"]
-                + ".assert_called_once_with"
-            ),
-            "filters",
-        )
-
-    return source
-
-
-# ============================================================
-# PAGINATION ARGUMENT NORMALIZATION
-# ============================================================
-
-def remove_old_limit_cursor_arguments(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Current APIs use PaginationModel(page=...) rather than
-    standalone:
-        limit=
-        cursor=
-
-    Remove legacy standalone args from service calls when
-    configured.
-    """
-
-    if not api_config.get(
-        "uses_pagination_model",
-        True,
-    ):
-        return source
-
-    candidates = [
-        api_config["lookup_function"],
-        api_config["search_function"],
-        api_config.get(
-            "service_lookup_function",
-            "",
-        ),
-    ]
-
-    for function_name in candidates:
-        if not function_name:
-            continue
-
-        source = remove_keyword_argument_from_calls(
-            source,
-            function_name,
-            "limit",
-        )
-
-        source = remove_keyword_argument_from_calls(
-            source,
-            function_name,
-            "cursor",
-        )
-
-    return source
-
-
-# ============================================================
-# HANDLER POST-PROCESSING
-# ============================================================
-
-def fix_handler_function_names(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Handler names are explicitly config driven.
-    """
-
-    module_name = api_config["module_name"]
-    plural_name = api_config["plural_name"]
-
-    search_target = api_config[
-        "handler_search_function"
-    ]
-
-    details_target = api_config[
-        "handler_details_function"
-    ]
-
-    search_candidates = [
-        f"search_{module_name}_v1",
-        f"search_{plural_name}_v1",
-        f"search_{module_name}",
-        f"search_{plural_name}",
-    ]
-
-    for candidate in search_candidates:
-        source = source.replace(
-            candidate,
-            search_target,
-        )
-
-    detail_candidates = [
-        f"get_{module_name}_details",
-        f"get_{plural_name}_details",
-    ]
-
-    for candidate in detail_candidates:
-        source = source.replace(
-            candidate,
-            details_target,
-        )
-
-    return source
-
-
-def remove_nonexistent_handler_tests(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Optional config support.
-
-    Example:
-
-        "generate_search_handler_tests": False
-
-    allows an API that has no search handler to avoid generating
-    invalid tests.
-
-    Default is True.
-    """
-
-    if api_config.get(
-        "generate_search_handler_tests",
-        True,
-    ):
-        return source
-
-    search_name = api_config[
-        "handler_search_function"
-    ]
-
-    # Remove functions whose body references this missing
-    # search handler.
-    pattern = rf"""
-        ^def[ \t]+test_[^\n]+
-        \n
-        (?:
-            (?!^def[ \t]+test_).*\n
-        )*
-        (?:
-            .*{re.escape(search_name)}.*
-        )
-        (?:
-            (?!^def[ \t]+test_).*\n
-        )*
-    """
-
-    try:
-        source = re.sub(
-            pattern,
-            "",
-            source,
-            flags=re.MULTILINE | re.VERBOSE,
-        )
-    except re.error:
-        # Never allow optional cleanup to crash generator.
-        pass
-
-    return source
-
-
-# ============================================================
-# IMPORT NORMALIZATION
-# ============================================================
-
-def ensure_any_import(
-    source: str,
-) -> str:
-    """
-    Add ANY when generated service tests use ANY.
-    """
-
-    if "ANY" not in source:
-        return source
-
-    if re.search(
-        r"from\s+unittest\.mock\s+import[^\n]*\bANY\b",
-        source,
-    ):
-        return source
-
-    match = re.search(
-        r"from\s+unittest\.mock\s+import\s+([^\n]+)",
-        source,
-    )
-
-    if match:
-        current = match.group(1)
-
-        replacement = (
-            "from unittest.mock import "
-            + current.rstrip()
-            + ", ANY"
-        )
-
-        source = (
-            source[:match.start()]
-            + replacement
-            + source[match.end():]
-        )
-
-        return source
-
-    return (
-        "from unittest.mock import ANY\n"
-        + source
-    )
-
-
-# ============================================================
-# CUSTOM CONFIG REPLACEMENTS
-# ============================================================
-
-def apply_custom_replacements(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Apply API-specific overrides only after normal generic
-    replacements.
-
-    This lets future APIs add special differences without
-    changing generator code.
-    """
-
-    replacements = api_config.get(
-        "replacements",
-        {},
-    )
-
-    if not replacements:
-        return source
-
-    return apply_replacements(
-        source,
-        replacements,
-    )
-
-
-# ============================================================
-# TEST-TYPE POST PROCESSING
-# ============================================================
-
-def post_process_db(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-
-    source = fix_lookup_function_names(
-        source,
-        api_config,
-    )
-
-    source = fix_key_parameter(
-        source,
-        api_config,
-    )
-
-    source = remove_old_limit_cursor_arguments(
-        source,
-        api_config,
-    )
-
-    return clean_blank_lines(source)
-
-
-def post_process_model(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-
-    source = fix_key_parameter(
-        source,
-        api_config,
-    )
-
-    return clean_blank_lines(source)
-
-
-def post_process_service(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-
-    source = fix_lookup_function_names(
-        source,
-        api_config,
-    )
-
-    source = fix_search_function_names(
-        source,
-        api_config,
-    )
-
-    source = fix_key_parameter(
-        source,
-        api_config,
-    )
-
-    source = fix_none_filter_expectations(
-        source,
-    )
-
-    source = remove_old_limit_cursor_arguments(
-        source,
-        api_config,
-    )
-
-    source = normalize_repository_mock_assertions(
-        source,
-        api_config,
-    )
-
-    source = ensure_any_import(
-        source,
-    )
-
-    return clean_blank_lines(source)
-
-
-def post_process_handler(
-    source: str,
-    api_config: Dict[str, Any],
-) -> str:
-
-    source = fix_key_parameter(
-        source,
-        api_config,
-    )
-
-    source = fix_handler_function_names(
-        source,
-        api_config,
-    )
-
-    source = remove_nonexistent_handler_tests(
-        source,
-        api_config,
-    )
-
-    return clean_blank_lines(source)
-
-
-# ============================================================
-# MAIN TEMPLATE RENDER
-# ============================================================
-
-def render_test(
-    test_type: str,
-    template_source: str,
-    api_config: Dict[str, Any],
-) -> str:
-    """
-    Render one test file.
-    """
-
-    source = template_source
-
-    # --------------------------------------------------------
-    # 1. Generic name replacements
-    # --------------------------------------------------------
-
-    source = apply_replacements(
-        source,
-        build_standard_replacements(
-            api_config
-        ),
-    )
-
-    # --------------------------------------------------------
-    # 2. API-specific overrides from config
-    # --------------------------------------------------------
-
-    source = apply_custom_replacements(
-        source,
-        api_config,
-    )
-
-    # --------------------------------------------------------
-    # 3. Test-type-specific normalization
-    # --------------------------------------------------------
-
-    if test_type == "db":
-        source = post_process_db(
-            source,
-            api_config,
-        )
-
-    elif test_type == "model":
-        source = post_process_model(
-            source,
-            api_config,
-        )
-
-    elif test_type == "service":
-        source = post_process_service(
-            source,
-            api_config,
-        )
-
-    elif test_type == "handler":
-        source = post_process_handler(
-            source,
-            api_config,
-        )
-
-    else:
-        raise ValueError(
-            f"Unknown test type: {test_type}"
-        )
-
-    return source
-
-
-# ============================================================
-# TEMPLATE VALIDATION
-# ============================================================
-
-def validate_templates(
-    selected_type: Optional[str] = None,
-) -> bool:
-    """
-    Verify required Project Financial template files exist.
-    """
-
-    missing = []
-
-    types_to_check = (
-        [selected_type]
-        if selected_type
-        else TEST_TYPES
-    )
-
-    for test_type in types_to_check:
-
-        if test_type not in TEMPLATE_FILES:
-            missing.append(
-                (
-                    test_type,
-                    "<not configured>",
-                )
-            )
-            continue
-
-        path = normalize_path(
-            TEMPLATE_FILES[test_type]
-        )
-
-        if not path.exists():
-            missing.append(
-                (
-                    test_type,
-                    str(path),
-                )
-            )
-
-    if not missing:
-        return True
+def list_apis() -> None:
 
     print()
-    print("ERROR: Missing template files:")
-    print()
+    print("Configured APIs")
+    print("=" * 78)
 
-    for test_type, path in missing:
+    if not APIS:
+        print("No APIs configured.")
+        return
+
+    for api_name, config in APIS.items():
+
+        key_column = config.get(
+            "key_column",
+            "<not configured>",
+        )
+
+        lookup_function = config.get(
+            "lookup_function",
+            "<not configured>",
+        )
+
         print(
-            f"  {test_type:8} {path}"
+            f"{api_name:<30}"
+            f" key={key_column:<20}"
+            f" lookup={lookup_function}"
         )
 
     print()
-    print(
-        "The generator requires the existing "
-        "project_financial tests."
-    )
-    print()
-
-    return False
 
 
 # ============================================================
-# DESTINATION
+# DESTINATION FILE NAMES
 # ============================================================
 
 def destination_file(
     test_type: str,
-    api_config: Dict[str, Any],
+    api_config: dict,
 ) -> Path:
-    """
-    Return generated test destination.
-    """
 
     module_name = api_config["module_name"]
-
-    root = normalize_path(
-        DESTINATION_DIRS[test_type]
-    )
 
     if test_type == "db":
         filename = (
@@ -1279,33 +579,547 @@ def destination_file(
 
     else:
         raise ValueError(
-            f"Invalid test type: {test_type}"
+            f"Unsupported test type: {test_type}"
         )
 
-    return root / filename
+    return (
+        DESTINATION_DIRS[test_type]
+        / filename
+    )
 
 
 # ============================================================
-# GENERATE ONE TEST
+# SAFE TEXT REPLACEMENT
+#
+# IMPORTANT:
+#
+# We do replacements ONCE from the original template.
+#
+# We do NOT repeatedly replace generated values.
+#
+# This is what prevents:
+#
+#     search_po_funding_detail_v1_v1_v1
+#
+# and:
+#
+#     get_po_funding_detail_details
+#
+# ============================================================
+
+def replace_identifier(
+    source: str,
+    old: str,
+    new: str,
+) -> str:
+
+    if not old:
+        return source
+
+    if old == new:
+        return source
+
+    pattern = (
+        r"(?<![A-Za-z0-9_])"
+        + re.escape(old)
+        + r"(?![A-Za-z0-9_])"
+    )
+
+    return re.sub(
+        pattern,
+        lambda _: new,
+        source,
+    )
+
+
+def replace_plain(
+    source: str,
+    old: str,
+    new: str,
+) -> str:
+
+    if not old:
+        return source
+
+    if old == new:
+        return source
+
+    return source.replace(
+        old,
+        new,
+    )
+
+
+# ============================================================
+# REPLACEMENT MAP
+# ============================================================
+
+def build_replacements(
+    api_config: dict,
+) -> Dict[str, str]:
+
+    target_module = api_config["module_name"]
+    target_plural = api_config["plural_name"]
+    target_route = api_config["route_name"]
+    target_class = api_config["class_name"]
+
+    replacements = {
+
+        # ----------------------------------------------------
+        # Handler functions FIRST
+        #
+        # These are exact names.
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["search_handler"]:
+            api_config["search_handler"],
+
+        TEMPLATE_BASE["lookup_handler"]:
+            api_config["lookup_handler"],
+
+        # ----------------------------------------------------
+        # Service functions
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["search_function"]:
+            api_config["service_search_function"],
+
+        TEMPLATE_BASE["lookup_function"]:
+            api_config["service_lookup_function"],
+
+        # ----------------------------------------------------
+        # Repository/service modules
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["repository_module"]:
+            api_config["repository_module"],
+
+        TEMPLATE_BASE["service_module"]:
+            api_config["service_module"],
+
+        # ----------------------------------------------------
+        # Class names
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["class_name"]:
+            target_class,
+
+        # Common Project Financial class variants
+        "ProjectFinancialResponse":
+            f"{target_class}Response",
+
+        "ProjectFinancialSearchResponse":
+            f"{target_class}SearchResponse",
+
+        "ProjectFinancialSearchServiceResponse":
+            f"{target_class}SearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["key_column"]:
+            api_config["key_column"],
+
+        TEMPLATE_BASE["sample_key"]:
+            str(api_config["sample_key"]),
+
+        # ----------------------------------------------------
+        # Sample data
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["sample_field"]:
+            api_config["sample_field"],
+
+        TEMPLATE_BASE["sample_value"]:
+            str(api_config["sample_value"]),
+
+        # ----------------------------------------------------
+        # Route
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["route_name"]:
+            target_route,
+
+        # ----------------------------------------------------
+        # Plural module name BEFORE singular
+        # ----------------------------------------------------
+
+        TEMPLATE_BASE["plural_name"]:
+            target_plural,
+
+        TEMPLATE_BASE["module_name"]:
+            target_module,
+    }
+
+    extra = api_config.get(
+        "replacements",
+        {},
+    )
+
+    if extra:
+        replacements.update(extra)
+
+    return replacements
+
+
+# ============================================================
+# CORE TEMPLATE TRANSFORMATION
+# ============================================================
+
+def transform_template(
+    source: str,
+    api_config: dict,
+) -> str:
+
+    replacements = build_replacements(
+        api_config
+    )
+
+    # --------------------------------------------------------
+    # Very important:
+    #
+    # Sort by longest original token first.
+    #
+    # Example:
+    #
+    # project_financials
+    # project_financial
+    #
+    # must be replaced in this order.
+    # --------------------------------------------------------
+
+    ordered = sorted(
+        replacements.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+
+    result = source
+
+    for old, new in ordered:
+
+        result = replace_plain(
+            result,
+            old,
+            str(new),
+        )
+
+    return result
+
+
+# ============================================================
+# CLEAN DUPLICATED GENERATED NAMES
+#
+# This is intentionally conservative.
+#
+# It is a safety net only.
+# ============================================================
+
+def clean_duplicate_suffixes(
+    source: str,
+) -> str:
+
+    # _v1_v1_v1 -> _v1
+    source = re.sub(
+        r"(?:_v1){2,}",
+        "_v1",
+        source,
+    )
+
+    # _details_details -> _details
+    source = re.sub(
+        r"(?:_details){2,}",
+        "_details",
+        source,
+    )
+
+    # _service_service -> _service
+    source = re.sub(
+        r"(?:_service){2,}",
+        "_service",
+        source,
+    )
+
+    # _repo_repo -> _repo
+    source = re.sub(
+        r"(?:_repo){2,}",
+        "_repo",
+        source,
+    )
+
+    return source
+
+
+# ============================================================
+# HANDLER-SPECIFIC CORRECTIONS
+#
+# Instead of guessing handler names from the API name,
+# use the configured handler names directly.
+# ============================================================
+
+def fix_handler_names(
+    source: str,
+    api_config: dict,
+) -> str:
+
+    search_handler = api_config[
+        "search_handler"
+    ]
+
+    lookup_handler = api_config[
+        "lookup_handler"
+    ]
+
+    module_name = api_config[
+        "module_name"
+    ]
+
+    # --------------------------------------------------------
+    # Remove malformed generated search handler variants
+    # --------------------------------------------------------
+
+    bad_search_patterns = [
+        rf"search_{re.escape(module_name)}(?:_v1)+",
+        rf"search_{re.escape(module_name)}s(?:_v1)+",
+    ]
+
+    for pattern in bad_search_patterns:
+
+        source = re.sub(
+            pattern,
+            search_handler,
+            source,
+        )
+
+    # --------------------------------------------------------
+    # Remove malformed details handler variants
+    # --------------------------------------------------------
+
+    bad_lookup_patterns = [
+        rf"get_{re.escape(module_name)}(?:_details)+",
+        rf"get_{re.escape(module_name)}_by_project(?:_v1)+",
+        rf"get_{re.escape(module_name)}_by_project_id(?:_v1)+",
+    ]
+
+    for pattern in bad_lookup_patterns:
+
+        source = re.sub(
+            pattern,
+            lookup_handler,
+            source,
+        )
+
+    return source
+
+
+# ============================================================
+# SERVICE-SPECIFIC CORRECTIONS
+# ============================================================
+
+def fix_service_names(
+    source: str,
+    api_config: dict,
+) -> str:
+
+    module_name = api_config[
+        "module_name"
+    ]
+
+    search_function = api_config[
+        "service_search_function"
+    ]
+
+    lookup_function = api_config[
+        "service_lookup_function"
+    ]
+
+    # Known generic forms that may remain after template
+    # replacement.
+
+    source = re.sub(
+        rf"\bsearch_{re.escape(module_name)}s\b",
+        search_function,
+        source,
+    )
+
+    source = re.sub(
+        rf"\bget_{re.escape(module_name)}_details\b",
+        lookup_function,
+        source,
+    )
+
+    return source
+
+
+# ============================================================
+# REPOSITORY-SPECIFIC CORRECTIONS
+# ============================================================
+
+def fix_repository_names(
+    source: str,
+    api_config: dict,
+) -> str:
+
+    module_name = api_config[
+        "module_name"
+    ]
+
+    search_function = api_config[
+        "search_function"
+    ]
+
+    lookup_function = api_config[
+        "lookup_function"
+    ]
+
+    source = re.sub(
+        rf"\bget_{re.escape(module_name)}_details\b",
+        lookup_function,
+        source,
+    )
+
+    return source
+
+
+# ============================================================
+# MODEL-SPECIFIC CORRECTIONS
+# ============================================================
+
+def fix_model_names(
+    source: str,
+    api_config: dict,
+) -> str:
+
+    class_name = api_config[
+        "class_name"
+    ]
+
+    # A final consistency pass for common model names.
+
+    source = source.replace(
+        "ProjectFinancial",
+        class_name,
+    )
+
+    return source
+
+
+# ============================================================
+# POST PROCESS
+# ============================================================
+
+def post_process(
+    test_type: str,
+    source: str,
+    api_config: dict,
+) -> str:
+
+    source = clean_duplicate_suffixes(
+        source
+    )
+
+    if test_type == "db":
+
+        source = fix_repository_names(
+            source,
+            api_config,
+        )
+
+    elif test_type == "model":
+
+        source = fix_model_names(
+            source,
+            api_config,
+        )
+
+    elif test_type == "service":
+
+        source = fix_service_names(
+            source,
+            api_config,
+        )
+
+    elif test_type == "handler":
+
+        source = fix_handler_names(
+            source,
+            api_config,
+        )
+
+    source = clean_duplicate_suffixes(
+        source
+    )
+
+    return source
+
+
+# ============================================================
+# TEMPLATE VALIDATION
+# ============================================================
+
+def validate_templates(
+    selected_types: Iterable[str],
+) -> None:
+
+    missing = []
+
+    for test_type in selected_types:
+
+        path = TEMPLATE_FILES[
+            test_type
+        ]
+
+        if not path.exists():
+
+            missing.append(
+                (
+                    test_type,
+                    path,
+                )
+            )
+
+    if not missing:
+        return
+
+    print()
+    print(
+        "ERROR: Missing template files:"
+    )
+    print()
+
+    for test_type, path in missing:
+
+        print(
+            f"  {test_type:<10} {path}"
+        )
+
+    print()
+    print(
+        "The generator requires the existing "
+        "project_financial tests."
+    )
+
+    raise FileNotFoundError(
+        "One or more template files are missing."
+    )
+
+
+# ============================================================
+# GENERATE ONE TEST FILE
 # ============================================================
 
 def generate_one(
     test_type: str,
-    api_config: Dict[str, Any],
+    api_config: dict,
     *,
-    force: bool,
-    dry_run: bool,
-) -> bool:
-    """
-    Generate one test file.
+    force: bool = False,
+    dry_run: bool = False,
+) -> str:
 
-    Returns True when generated/planned.
-    Returns False when skipped.
-    """
-
-    template_path = normalize_path(
-        TEMPLATE_FILES[test_type]
-    )
+    template_path = TEMPLATE_FILES[
+        test_type
+    ]
 
     destination = destination_file(
         test_type,
@@ -1317,46 +1131,41 @@ def generate_one(
         and not force
         and not dry_run
     ):
+
         print(
             f"SKIP   [{test_type:<7}] "
             f"{destination}"
         )
-        return False
 
-    try:
-        template_source = (
-            template_path.read_text(
-                encoding="utf-8"
-            )
-        )
-    except UnicodeDecodeError:
-        template_source = (
-            template_path.read_text(
-                encoding="utf-8-sig"
-            )
-        )
+        return "skipped"
 
-    generated_source = render_test(
+    source = read_text(
+        template_path
+    )
+
+    source = transform_template(
+        source,
+        api_config,
+    )
+
+    source = post_process(
         test_type,
-        template_source,
+        source,
         api_config,
     )
 
     if dry_run:
+
         print(
             f"DRY    [{test_type:<7}] "
             f"{destination}"
         )
-        return True
 
-    destination.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+        return "generated"
 
-    destination.write_text(
-        generated_source,
-        encoding="utf-8",
+    write_text(
+        destination,
+        source,
     )
 
     print(
@@ -1364,7 +1173,7 @@ def generate_one(
         f"{destination}"
     )
 
-    return True
+    return "generated"
 
 
 # ============================================================
@@ -1378,51 +1187,88 @@ def generate_api(
     dry_run: bool = False,
     selected_type: Optional[str] = None,
 ) -> None:
-    """
-    Generate configured tests for one API.
-    """
 
-    if api_name not in APIS:
+    normalized = normalize_api_name(
+        api_name
+    )
+
+    if normalized not in APIS:
+
         print()
         print(
             f"ERROR: API '{api_name}' "
             "is not configured."
         )
-        print()
-        print("Run:")
-        print()
-        print(
-            "  py generate_api_tests.py --list"
-        )
-        print()
-        return
 
-    api_config = prepare_api_config(
-        api_name,
-        APIS[api_name],
+        print()
+        list_apis()
+
+        raise KeyError(
+            normalized
+        )
+
+    config = APIS[
+        normalized
+    ]
+
+    validate_api_config(
+        normalized,
+        config,
     )
 
-    if not validate_templates(
-        selected_type
-    ):
-        return
+    if selected_type:
+
+        if selected_type not in VALID_TEST_TYPES:
+
+            raise ValueError(
+                f"Invalid test type "
+                f"'{selected_type}'. "
+                f"Valid values: "
+                f"{', '.join(TEST_TYPES)}"
+            )
+
+        selected_types = (
+            selected_type,
+        )
+
+    else:
+
+        selected_types = TEST_TYPES
+
+    validate_templates(
+        selected_types
+    )
 
     print()
     print(
         "=" * 78
     )
+
     print(
         f"Generating tests for API: "
-        f"{api_name}"
+        f"{normalized}"
     )
+
     print(
         f"Key column: "
-        f"{api_config['key_column']}"
+        f"{config['key_column']}"
     )
+
     print(
         f"Lookup function: "
-        f"{api_config['lookup_function']}"
+        f"{config['lookup_function']}"
     )
+
+    print(
+        f"Search handler: "
+        f"{config['search_handler']}"
+    )
+
+    print(
+        f"Lookup handler: "
+        f"{config['lookup_handler']}"
+    )
+
     print(
         "=" * 78
     )
@@ -1430,22 +1276,16 @@ def generate_api(
     generated = 0
     skipped = 0
 
-    types_to_generate = (
-        [selected_type]
-        if selected_type
-        else TEST_TYPES
-    )
+    for test_type in selected_types:
 
-    for test_type in types_to_generate:
-
-        result = generate_one(
+        status = generate_one(
             test_type,
-            api_config,
+            config,
             force=force,
             dry_run=dry_run,
         )
 
-        if result:
+        if status == "generated":
             generated += 1
         else:
             skipped += 1
@@ -1454,62 +1294,24 @@ def generate_api(
     print(
         f"Generated: {generated}"
     )
+
     print(
         f"Skipped:   {skipped}"
     )
-    print()
-
-
-# ============================================================
-# LIST
-# ============================================================
-
-def list_apis() -> None:
-    """
-    Print all configured APIs.
-    """
-
-    print()
-    print("Configured APIs")
-    print(
-        "=" * 78
-    )
-
-    if not APIS:
-        print(
-            "No APIs configured."
-        )
-        print()
-        return
-
-    for api_name in sorted(
-        APIS.keys()
-    ):
-
-        config = prepare_api_config(
-            api_name,
-            APIS[api_name],
-        )
-
-        print(
-            f"{api_name:<30} "
-            f"key={config['key_column']:<20} "
-            f"lookup={config['lookup_function']}"
-        )
 
     print()
 
 
 # ============================================================
-# ARGUMENTS
+# COMMAND LINE
 # ============================================================
 
 def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Generate API unit tests from the "
-            "Project Financial template tests."
+            "Generate API unit tests using "
+            "Project Financial tests as templates."
         )
     )
 
@@ -1517,14 +1319,15 @@ def build_parser() -> argparse.ArgumentParser:
         "api",
         nargs="?",
         help=(
-            "Configured API name, for example "
-            "po_funding_detail"
+            "API name from APIS configuration. "
+            "Example: po_funding_detail"
         ),
     )
 
     parser.add_argument(
         "--list",
         action="store_true",
+        dest="list_apis",
         help="List configured APIs.",
     )
 
@@ -1532,7 +1335,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help=(
-            "Overwrite existing generated files."
+            "Overwrite existing generated tests."
         ),
     )
 
@@ -1546,8 +1349,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--test-type",
-        choices=list(TEST_TYPES),
+        "--type",
+        dest="test_type",
+        choices=TEST_TYPES,
         help=(
             "Generate only one test type."
         ),
@@ -1566,39 +1370,53 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.list:
+    if args.list_apis:
+
         list_apis()
         return
 
     if not args.api:
+
         parser.print_help()
+
         print()
-        print("Examples:")
+        print(
+            "Example:"
+        )
+
+        print(
+            "  py generate_api_tests.py "
+            "po_funding_detail"
+        )
+
         print()
+        print(
+            "List APIs:"
+        )
+
         print(
             "  py generate_api_tests.py --list"
         )
-        print(
-            "  py generate_api_tests.py "
-            "po_funding_detail --dry-run"
-        )
-        print(
-            "  py generate_api_tests.py "
-            "po_funding_detail --force"
-        )
-        print(
-            "  py generate_api_tests.py "
-            "po_funding_detail "
-            "--test-type service --force"
-        )
+
         return
 
-    generate_api(
-        args.api,
-        force=args.force,
-        dry_run=args.dry_run,
-        selected_type=args.test_type,
-    )
+    try:
+
+        generate_api(
+            args.api,
+            force=args.force,
+            dry_run=args.dry_run,
+            selected_type=args.test_type,
+        )
+
+    except Exception as exc:
+
+        print()
+        print(
+            f"ERROR: {exc}"
+        )
+
+        sys.exit(1)
 
 
 # ============================================================
