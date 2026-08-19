@@ -45,6 +45,7 @@ try:
         DESTINATION_DIRS,
         TEMPLATE_FILES,
         TEST_TYPES,
+        SOURCE_ROOT,
     )
 except ImportError as exc:
     print()
@@ -295,19 +296,13 @@ def prepare_api_config(
         or handler_details_function
     )
 
-    explicit_lookup_flag = first_config_value(
-        config,
-        "supports_key_lookup",
-        default=None,
+    supports_key_lookup = bool(
+        first_config_value(
+            config,
+            "supports_key_lookup",
+            default=inferred_key_lookup,
+        )
     )
-
-    # A bare supports_key_lookup=True is not enough to invent function names.
-    # Generate lookup tests only when an actual lookup function/details handler
-    # is configured.  An explicit False always disables lookup generation.
-    if explicit_lookup_flag is False:
-        supports_key_lookup = False
-    else:
-        supports_key_lookup = inferred_key_lookup
 
     if supports_key_lookup:
         repo_key_function = (
@@ -409,6 +404,112 @@ def prepare_api_config(
             "lookup_supports_filters": lookup_supports_filters,
         }
     )
+
+    return config
+
+
+# =============================================================================
+# SOURCE-CODE RECONCILIATION
+# =============================================================================
+
+
+def _python_function_names(path: Path) -> set[str]:
+    """Return top-level sync/async function names from a Python source file."""
+    if not path.exists():
+        return set()
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    except (SyntaxError, OSError):
+        return set()
+
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def reconcile_config_with_source(api_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Reconcile configuration with the REAL implementation before generating tests.
+
+    This is intentionally authoritative: a stale api_test_config.py must never
+    make the generator create tests for functions that do not exist.
+    """
+    config = dict(api_config)
+    module_name = config["module_name"]
+
+    repo_file = SOURCE_ROOT / "db" / "repositories" / f"{module_name}_repo.py"
+    service_file = SOURCE_ROOT / "domain" / "services" / f"{module_name}_service.py"
+    handler_file = SOURCE_ROOT / "v1" / "handlers" / f"{module_name}.py"
+
+    repo_functions = _python_function_names(repo_file)
+    service_functions = _python_function_names(service_file)
+    handler_functions = _python_function_names(handler_file)
+
+    # Search functions: prefer configured name, but repair common _v1 mismatch.
+    repo_search = config.get("repo_search_function")
+    if repo_functions and repo_search not in repo_functions:
+        fallback = f"get_{module_name}"
+        if fallback in repo_functions:
+            config["repo_search_function"] = fallback
+
+    service_search = config.get("service_search_function")
+    if service_functions and service_search not in service_functions:
+        fallback = f"search_{module_name}"
+        if fallback in service_functions:
+            config["service_search_function"] = fallback
+
+    handler_search = config.get("handler_search_function")
+    if handler_functions and handler_search not in handler_functions:
+        candidates = unique_nonempty([
+            f"{handler_search}_v1" if handler_search else None,
+            f"search_{module_name}_v1",
+            f"search_{module_name}",
+        ])
+        for candidate in candidates:
+            if candidate in handler_functions:
+                config["handler_search_function"] = candidate
+                break
+
+    # Key/detail functions: NEVER invent them. If either repo or service lookup
+    # does not exist, disable lookup tests for the entire generated stack.
+    repo_key = config.get("repo_key_function")
+    service_key = config.get("service_key_function")
+
+    repo_key_exists = bool(repo_key and repo_key in repo_functions) if repo_functions else False
+    service_key_exists = bool(service_key and service_key in service_functions) if service_functions else False
+
+    if not (repo_key_exists and service_key_exists):
+        config["supports_key_lookup"] = False
+        config["repo_key_function"] = None
+        config["service_key_function"] = None
+    else:
+        config["supports_key_lookup"] = True
+
+    handler_details = config.get("handler_details_function")
+    if not handler_details:
+        handler_details = config.get("handler_key_function")
+
+    if handler_functions and handler_details in handler_functions:
+        config["handler_details_function"] = handler_details
+        config["supports_handler_key_lookup"] = True
+    else:
+        config["handler_details_function"] = None
+        config["supports_handler_key_lookup"] = False
+
+    print("Source reconciliation:")
+    print(f"  repo file:     {repo_file}")
+    print(f"  service file:  {service_file}")
+    print(f"  handler file:  {handler_file}")
+    print(f"  repo search:   {config.get('repo_search_function')}")
+    print(f"  service search:{config.get('service_search_function')}")
+    print(f"  handler search:{config.get('handler_search_function')}")
+    print(f"  key lookup:    {config.get('supports_key_lookup')}")
+    print(f"  handler lookup:{config.get('supports_handler_key_lookup')}")
+    print()
 
     return config
 
@@ -1230,40 +1331,178 @@ def iter_test_function_blocks(
     source: str,
 ) -> list[tuple[int, int, str, str]]:
     """
-    Return:
-        (start_offset, end_offset, test_name, full_block)
-    for top-level pytest test functions.
+    Return complete top-level pytest test-function blocks INCLUDING decorators.
+
+    AST is used here because a decorated test must be removed as one unit.
+    Starting at the ``def`` line only leaves orphaned @patch decorators behind
+    and creates invalid Python.
     """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # The source entering this function should normally be valid.  If it is
+        # not, fall back to a conservative line-based scan rather than making
+        # the file worse.
+        tree = None
 
-    function_pattern = re.compile(
-        r"(?m)^def\s+(test_[A-Za-z0-9_]+)\s*\("
-    )
+    line_offsets = [0]
+    for match in re.finditer(r"\n", source):
+        line_offsets.append(match.end())
 
-    matches = list(
-        function_pattern.finditer(source)
-    )
+    def offset_for_line(line_no: int) -> int:
+        if line_no <= 1:
+            return 0
+        index = min(line_no - 1, len(line_offsets) - 1)
+        return line_offsets[index]
 
     blocks: list[tuple[int, int, str, str]] = []
 
-    for index, match in enumerate(matches):
-        start = match.start()
+    if tree is not None:
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.startswith("test_"):
+                continue
 
-        if index + 1 < len(matches):
-            end = matches[index + 1].start()
-        else:
-            end = len(source)
+            decorator_lines = [
+                decorator.lineno
+                for decorator in node.decorator_list
+                if getattr(decorator, "lineno", None)
+            ]
+            start_line = min([node.lineno] + decorator_lines)
+
+            end_line = getattr(node, "end_lineno", node.lineno)
+            start_offset = offset_for_line(start_line)
+
+            if end_line < len(line_offsets):
+                end_offset = offset_for_line(end_line + 1)
+            else:
+                end_offset = len(source)
+
+            blocks.append(
+                (
+                    start_offset,
+                    end_offset,
+                    node.name,
+                    source[start_offset:end_offset],
+                )
+            )
+
+        return blocks
+
+    # Fallback for unexpected malformed input.
+    function_pattern = re.compile(
+        r"(?m)^def\s+(test_[A-Za-z0-9_]+)\s*\("
+    )
+    matches = list(function_pattern.finditer(source))
+
+    for match in matches:
+        start_offset = match.start()
+
+        # Walk upward over contiguous top-level decorators.
+        cursor = start_offset
+        while cursor > 0:
+            prev_end = cursor - 1
+            if prev_end >= 0 and source[prev_end] == "\n":
+                prev_end -= 1
+            if prev_end < 0:
+                break
+
+            prev_start = source.rfind("\n", 0, prev_end + 1) + 1
+            prev_line = source[prev_start:prev_end + 1].strip()
+
+            if prev_line.startswith("@"):
+                cursor = prev_start
+                start_offset = prev_start
+                continue
+            break
+
+        # Conservative end: next top-level test def or EOF.
+        later = function_pattern.search(source, match.end())
+        end_offset = later.start() if later else len(source)
 
         blocks.append(
             (
-                start,
-                end,
+                start_offset,
+                end_offset,
                 match.group(1),
-                source[start:end],
+                source[start_offset:end_offset],
             )
         )
 
     return blocks
 
+
+def remove_orphan_patch_decorators(source: str) -> str:
+    """
+    Remove top-level @patch/@patch.object decorator groups that are not followed
+    by a function definition.
+
+    This is a final safety net after test removal.  It specifically prevents
+    generated files from ending with orphan decorators such as:
+
+        @patch("...")
+        @patch("...")
+
+    which is invalid Python.
+    """
+    lines = source.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        stripped = lines[index].lstrip()
+        is_top_level = len(lines[index]) == len(stripped)
+
+        if is_top_level and (
+            stripped.startswith("@patch(")
+            or stripped.startswith("@patch.object(")
+        ):
+            group_start = index
+            cursor = index
+
+            # Consume a decorator group.  Supports both one-line decorators and
+            # simple multi-line decorator calls by tracking parentheses.
+            while cursor < len(lines):
+                current = lines[cursor]
+                current_stripped = current.lstrip()
+                current_top_level = len(current) == len(current_stripped)
+
+                if not current_top_level or not (
+                    current_stripped.startswith("@patch(")
+                    or current_stripped.startswith("@patch.object(")
+                ):
+                    break
+
+                depth = current.count("(") - current.count(")")
+                cursor += 1
+
+                while depth > 0 and cursor < len(lines):
+                    depth += lines[cursor].count("(") - lines[cursor].count(")")
+                    cursor += 1
+
+            lookahead = cursor
+            while lookahead < len(lines) and not lines[lookahead].strip():
+                lookahead += 1
+
+            if lookahead >= len(lines) or not re.match(
+                r"^(?:async\s+)?def\s+test_[A-Za-z0-9_]+\s*\(",
+                lines[lookahead],
+            ):
+                # Drop only the orphan decorators. Preserve blank lines so the
+                # surrounding source remains readable.
+                index = cursor
+                continue
+
+            # Valid decorator group: preserve it.
+            output.extend(lines[group_start:cursor])
+            index = cursor
+            continue
+
+        output.append(lines[index])
+        index += 1
+
+    return clean_blank_lines("".join(output))
 
 def remove_test_functions_containing(
     source: str,
@@ -1439,44 +1678,39 @@ def remove_name_from_imports(source: str, name: str) -> str:
 
 
 def remove_unsupported_lookup_tests(source: str, api_config: Dict[str, Any]) -> str:
-    """
-    Remove template lookup/details tests when the target API has no separate
-    key/detail lookup operation.
-
-    IMPORTANT:
-    Project Financial templates may use names such as ``by_id`` even when the
-    target API key is named ``proj_id``.  Therefore cleanup must not depend only
-    on ``key_param``.  When lookup support is disabled, remove ANY generated
-    ``get_<module>_by_*`` / ``get_<plural>_by_*`` tests plus details/detail tests.
-    """
-    if api_config.get("supports_key_lookup", False):
+    """Remove template lookup/details tests when the target API has no lookup endpoint."""
+    if api_config.get("supports_key_lookup", True):
         return source
 
     module_name = api_config["module_name"]
     plural_name = api_config["plural_name"]
+    key_param = api_config["key_param"]
 
-    # Known configured/derived symbols that may appear in imports or bodies.
     names = unique_nonempty([
         api_config.get("repo_key_function"),
         api_config.get("service_key_function"),
         api_config.get("handler_details_function"),
+        f"get_{module_name}_by_{key_param}",
+        f"get_{plural_name}_by_{key_param}",
         f"get_{module_name}_details",
         f"get_{plural_name}_details",
         f"get_{module_name}_detail",
         f"get_{plural_name}_detail",
     ])
 
+    # Remove complete tests that exercise nonexistent lookup/details functions.
     for name in names:
         source = remove_test_functions_containing(source, name)
         source = remove_name_from_imports(source, name)
 
-    # Remove complete tests whose names indicate ANY key lookup, regardless of
-    # whether the template used by_id, by_project_id, by_proj_id, etc.
+    # Catch lookup tests whose function names survived template substitutions.
     source = remove_test_functions_matching_name(
         source,
         [
-            rf"test_.*get_{re.escape(module_name)}_by_.*",
-            rf"test_.*get_{re.escape(plural_name)}_by_.*",
+            rf"test_.*{re.escape(module_name)}.*by_.*",
+            rf"test_.*{re.escape(plural_name)}.*by_.*",
+            rf"test_get_{re.escape(module_name)}_by_.*",
+            rf"test_get_{re.escape(plural_name)}_by_.*",
             rf"test_get_{re.escape(module_name)}_details_.*",
             rf"test_get_{re.escape(plural_name)}_details_.*",
             rf"test_get_{re.escape(module_name)}_detail_.*",
@@ -1484,32 +1718,14 @@ def remove_unsupported_lookup_tests(source: str, api_config: Dict[str, Any]) -> 
         ],
     )
 
-    # Remove leftover imported lookup symbols, including by_id/by_project_id/etc.
-    source = re.sub(
-        rf"(?m)^[ \t]*get_{re.escape(module_name)}_by_[A-Za-z0-9_]+[ \t]*,?[ \t]*\n",
-        "",
-        source,
-    )
-    if plural_name != module_name:
-        source = re.sub(
-            rf"(?m)^[ \t]*get_{re.escape(plural_name)}_by_[A-Za-z0-9_]+[ \t]*,?[ \t]*\n",
-            "",
-            source,
-        )
-
-    # Remove now-empty parenthesized imports.
-    source = re.sub(
-        r"(?ms)^from\s+[A-Za-z0-9_\.]+\s+import\s*\(\s*\)\s*\n?",
-        "",
-        source,
-    )
-
-    # Remove orphaned decorators that can remain after dropping a test block.
+    # Remove orphaned patch decorators left immediately before the next test.
     source = re.sub(
         r"(?m)^(?:@patch(?:\.object)?\([^\n]*\)\n)+(?=\s*\n)",
         "",
         source,
     )
+
+    source = remove_orphan_patch_decorators(source)
 
     return clean_blank_lines(source)
 
@@ -2039,6 +2255,28 @@ def generate_one(
         api_config,
     )
 
+    # Final hard guard: when lookup is unsupported, generated output may not
+    # contain any target lookup/detail calls left over from the template.
+    if not api_config.get("supports_key_lookup", False):
+        forbidden_patterns = [
+            rf"get_{re.escape(api_config['module_name'])}_by_[A-Za-z0-9_]+",
+            rf"get_{re.escape(api_config['plural_name'])}_by_[A-Za-z0-9_]+",
+            rf"get_{re.escape(api_config['module_name'])}_details?",
+            rf"get_{re.escape(api_config['plural_name'])}_details?",
+        ]
+        leftovers = []
+        for pattern in forbidden_patterns:
+            leftovers.extend(re.findall(pattern, generated_source))
+        if leftovers:
+            raise ValueError(
+                "Generator safety check failed. Unsupported lookup/detail "
+                f"symbols remain in {test_type}: {sorted(set(leftovers))}"
+            )
+
+    generated_source = remove_orphan_patch_decorators(
+        generated_source
+    )
+
     validate_generated_python(
         generated_source,
         test_type=test_type,
@@ -2103,6 +2341,8 @@ def generate_api(
         api_name,
         APIS[api_name],
     )
+
+    api_config = reconcile_config_with_source(api_config)
 
     if not validate_templates(
         selected_type
