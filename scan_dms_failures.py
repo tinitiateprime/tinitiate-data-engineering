@@ -2255,18 +2255,41 @@ def generate_one(
         api_config,
     )
 
-    # Final hard guard: when lookup is unsupported, generated output may not
-    # contain any target lookup/detail calls left over from the template.
-    if not api_config.get("supports_key_lookup", False):
+    # Final hard guard for executable layers only.
+    #
+    # IMPORTANT:
+    # Model tests can legitimately contain words such as "..._details" in
+    # model/test names even when the API has no separate key/detail endpoint.
+    # The previous guard scanned the entire generated model source and treated
+    # those harmless names as unsupported endpoint functions, stopping
+    # generation even though the Python was valid.
+    #
+    # Repository, service and handler tests are the layers where an unsupported
+    # lookup function would actually be called, so enforce the guard there.
+    if (
+        test_type in {"db", "service", "handler"}
+        and not api_config.get("supports_key_lookup", False)
+    ):
         forbidden_patterns = [
-            rf"get_{re.escape(api_config['module_name'])}_by_[A-Za-z0-9_]+",
-            rf"get_{re.escape(api_config['plural_name'])}_by_[A-Za-z0-9_]+",
-            rf"get_{re.escape(api_config['module_name'])}_details?",
-            rf"get_{re.escape(api_config['plural_name'])}_details?",
+            rf"\bget_{re.escape(api_config['module_name'])}_by_[A-Za-z0-9_]+\b",
+            rf"\bget_{re.escape(api_config['plural_name'])}_by_[A-Za-z0-9_]+\b",
         ]
-        leftovers = []
+
+        # Detail-handler names are only an error in the handler layer.
+        if test_type == "handler":
+            forbidden_patterns.extend(
+                [
+                    rf"\bget_{re.escape(api_config['module_name'])}_details?\b",
+                    rf"\bget_{re.escape(api_config['plural_name'])}_details?\b",
+                ]
+            )
+
+        leftovers: list[str] = []
         for pattern in forbidden_patterns:
-            leftovers.extend(re.findall(pattern, generated_source))
+            leftovers.extend(
+                re.findall(pattern, generated_source)
+            )
+
         if leftovers:
             raise ValueError(
                 "Generator safety check failed. Unsupported lookup/detail "
