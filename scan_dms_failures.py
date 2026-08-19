@@ -1465,8 +1465,12 @@ def ensure_handler_mock_items_support_model_dump(
     if f"class {class_name}(" not in source:
         class_block = (
             "\n"
-            "class _ModelDumpNamespace(SimpleNamespace):\n"
-            "    \"\"\"SimpleNamespace test double with Pydantic-style model_dump().\"\"\"\n"
+            "class _ModelDumpNamespace:\n"
+            "    \"\"\"Lightweight test double with Pydantic-style model_dump().\"\"\"\n"
+            "\n"
+            "    def __init__(self, **kwargs):\n"
+            "        for key, value in kwargs.items():\n"
+            "            setattr(self, key, value)\n"
             "\n"
             "    def model_dump(self):\n"
             "        def convert(value):\n"
@@ -1520,11 +1524,6 @@ def ensure_handler_mock_items_support_model_dump(
     source = source.replace(
         "SimpleNamespace(",
         f"{class_name}(",
-    )
-
-    source = source.replace(
-        f"class {class_name}({class_name}):",
-        f"class {class_name}(SimpleNamespace):",
     )
 
     return source
