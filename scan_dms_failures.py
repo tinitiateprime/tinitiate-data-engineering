@@ -295,13 +295,19 @@ def prepare_api_config(
         or handler_details_function
     )
 
-    supports_key_lookup = bool(
-        first_config_value(
-            config,
-            "supports_key_lookup",
-            default=inferred_key_lookup,
-        )
+    explicit_lookup_flag = first_config_value(
+        config,
+        "supports_key_lookup",
+        default=None,
     )
+
+    # A bare supports_key_lookup=True is not enough to invent function names.
+    # Generate lookup tests only when an actual lookup function/details handler
+    # is configured.  An explicit False always disables lookup generation.
+    if explicit_lookup_flag is False:
+        supports_key_lookup = False
+    else:
+        supports_key_lookup = inferred_key_lookup
 
     if supports_key_lookup:
         repo_key_function = (
@@ -1433,37 +1439,44 @@ def remove_name_from_imports(source: str, name: str) -> str:
 
 
 def remove_unsupported_lookup_tests(source: str, api_config: Dict[str, Any]) -> str:
-    """Remove template lookup/details tests when the target API has no lookup endpoint."""
-    if api_config.get("supports_key_lookup", True):
+    """
+    Remove template lookup/details tests when the target API has no separate
+    key/detail lookup operation.
+
+    IMPORTANT:
+    Project Financial templates may use names such as ``by_id`` even when the
+    target API key is named ``proj_id``.  Therefore cleanup must not depend only
+    on ``key_param``.  When lookup support is disabled, remove ANY generated
+    ``get_<module>_by_*`` / ``get_<plural>_by_*`` tests plus details/detail tests.
+    """
+    if api_config.get("supports_key_lookup", False):
         return source
 
     module_name = api_config["module_name"]
     plural_name = api_config["plural_name"]
-    key_param = api_config["key_param"]
 
+    # Known configured/derived symbols that may appear in imports or bodies.
     names = unique_nonempty([
         api_config.get("repo_key_function"),
         api_config.get("service_key_function"),
         api_config.get("handler_details_function"),
-        f"get_{module_name}_by_{key_param}",
-        f"get_{plural_name}_by_{key_param}",
         f"get_{module_name}_details",
         f"get_{plural_name}_details",
         f"get_{module_name}_detail",
         f"get_{plural_name}_detail",
     ])
 
-    # Remove complete tests that exercise nonexistent lookup/details functions.
     for name in names:
         source = remove_test_functions_containing(source, name)
         source = remove_name_from_imports(source, name)
 
-    # Catch lookup tests whose function names survived template substitutions.
+    # Remove complete tests whose names indicate ANY key lookup, regardless of
+    # whether the template used by_id, by_project_id, by_proj_id, etc.
     source = remove_test_functions_matching_name(
         source,
         [
-            rf"test_.*{re.escape(module_name)}.*by_{re.escape(key_param)}.*",
-            rf"test_.*{re.escape(plural_name)}.*by_{re.escape(key_param)}.*",
+            rf"test_.*get_{re.escape(module_name)}_by_.*",
+            rf"test_.*get_{re.escape(plural_name)}_by_.*",
             rf"test_get_{re.escape(module_name)}_details_.*",
             rf"test_get_{re.escape(plural_name)}_details_.*",
             rf"test_get_{re.escape(module_name)}_detail_.*",
@@ -1471,7 +1484,27 @@ def remove_unsupported_lookup_tests(source: str, api_config: Dict[str, Any]) -> 
         ],
     )
 
-    # Remove orphaned patch decorators left immediately before the next test.
+    # Remove leftover imported lookup symbols, including by_id/by_project_id/etc.
+    source = re.sub(
+        rf"(?m)^[ \t]*get_{re.escape(module_name)}_by_[A-Za-z0-9_]+[ \t]*,?[ \t]*\n",
+        "",
+        source,
+    )
+    if plural_name != module_name:
+        source = re.sub(
+            rf"(?m)^[ \t]*get_{re.escape(plural_name)}_by_[A-Za-z0-9_]+[ \t]*,?[ \t]*\n",
+            "",
+            source,
+        )
+
+    # Remove now-empty parenthesized imports.
+    source = re.sub(
+        r"(?ms)^from\s+[A-Za-z0-9_\.]+\s+import\s*\(\s*\)\s*\n?",
+        "",
+        source,
+    )
+
+    # Remove orphaned decorators that can remain after dropping a test block.
     source = re.sub(
         r"(?m)^(?:@patch(?:\.object)?\([^\n]*\)\n)+(?=\s*\n)",
         "",
