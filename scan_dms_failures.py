@@ -33,6 +33,7 @@ Generate only one test type:
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 from pathlib import Path
@@ -678,6 +679,168 @@ def fix_handler_function_names(
         )
 
     return source
+
+
+# =============================================================================
+# HANDLER SERVICE PATCH REPAIR
+# =============================================================================
+
+
+def _replace_patch_object_attribute(
+    source: str,
+    module_name: str,
+    old_attribute: Optional[str],
+    new_attribute: Optional[str],
+) -> str:
+    """
+    Replace only the attribute string inside @patch.object(module, "...").
+
+    This intentionally does NOT replace normal function calls. Handler tests
+    must call the real handler while mocking the service dependency used by
+    that handler.
+    """
+
+    if (
+        not module_name
+        or not old_attribute
+        or not new_attribute
+        or old_attribute == new_attribute
+    ):
+        return source
+
+    pattern = re.compile(
+        rf"""
+        (?P<prefix>
+            @patch\.object
+            \(
+            \s*
+            {re.escape(module_name)}
+            \s*
+            ,
+            \s*
+        )
+        (?P<quote>["'])
+        {re.escape(old_attribute)}
+        (?P=quote)
+        """,
+        flags=re.MULTILINE | re.VERBOSE,
+    )
+
+    return pattern.sub(
+        lambda match: (
+            match.group("prefix")
+            + match.group("quote")
+            + str(new_attribute)
+            + match.group("quote")
+        ),
+        source,
+    )
+
+
+def repair_handler_service_patches(
+    source: str,
+    api_config: Dict[str, Any],
+) -> str:
+    """
+    Ensure handler tests patch SERVICE functions, never the handler itself.
+
+    Example:
+
+        @patch.object(
+            po_funding_detail,
+            "search_po_funding_detail",
+        )
+        def test_search_po_funding_detail_v1_success(...):
+            response = po_funding_detail.search_po_funding_detail_v1(...)
+
+    The old generator could normalize both names to
+    search_po_funding_detail_v1. That makes the handler call return a MagicMock
+    instead of executing the real handler.
+    """
+
+    module_name = api_config["module_name"]
+
+    handler_search = api_config.get(
+        "handler_search_function"
+    )
+    service_search = api_config.get(
+        "service_search_function"
+    )
+
+    source = _replace_patch_object_attribute(
+        source,
+        module_name,
+        handler_search,
+        service_search,
+    )
+
+    handler_details = api_config.get(
+        "handler_details_function"
+    )
+    service_details = api_config.get(
+        "service_key_function"
+    )
+
+    source = _replace_patch_object_attribute(
+        source,
+        module_name,
+        handler_details,
+        service_details,
+    )
+
+    return source
+
+
+def validate_generated_python(
+    source: str,
+    *,
+    test_type: str,
+    destination: Optional[Path] = None,
+) -> None:
+    """
+    Validate generated Python before writing it to disk.
+
+    This prevents the generator from overwriting a working test file with
+    malformed output.
+    """
+
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        lines = source.splitlines()
+        line_no = exc.lineno or 0
+
+        start = max(1, line_no - 3)
+        end = min(len(lines), line_no + 3)
+
+        location = (
+            f" for {destination}"
+            if destination is not None
+            else ""
+        )
+
+        details = [
+            "",
+            f"ERROR: Generated {test_type} test is invalid Python{location}.",
+            (
+                f"SyntaxError at line {line_no}, "
+                f"column {exc.offset or 0}: {exc.msg}"
+            ),
+            "",
+            "Generated source near the error:",
+        ]
+
+        for number in range(start, end + 1):
+            pointer = ">>" if number == line_no else "  "
+            details.append(
+                f"{pointer} {number:4}: {lines[number - 1]}"
+            )
+
+        details.append("")
+
+        raise ValueError(
+            "\n".join(details)
+        ) from exc
 
 
 # =============================================================================
@@ -1382,6 +1545,13 @@ def post_process_handler(
         api_config,
     )
 
+    # The handler test must patch the service dependency while still calling
+    # the real handler function.
+    source = repair_handler_service_patches(
+        source,
+        api_config,
+    )
+
     source = remove_nonexistent_handler_tests(
         source,
         api_config,
@@ -1610,6 +1780,12 @@ def generate_one(
         test_type,
         template_source,
         api_config,
+    )
+
+    validate_generated_python(
+        generated_source,
+        test_type=test_type,
+        destination=destination,
     )
 
     if dry_run:
@@ -1868,4 +2044,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main() 
+    main()
