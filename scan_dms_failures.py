@@ -1444,6 +1444,92 @@ def apply_custom_replacements(
     )
 
 
+
+# =============================================================================
+# HANDLER TEST MODEL-DUMP COMPATIBILITY
+# =============================================================================
+
+
+def ensure_handler_mock_items_support_model_dump(
+    source: str,
+) -> str:
+    """
+    Make SimpleNamespace-based handler test items support model_dump().
+    """
+
+    if "SimpleNamespace" not in source:
+        return source
+
+    class_name = "_ModelDumpNamespace"
+
+    if f"class {class_name}(" not in source:
+        class_block = (
+            "\n"
+            "class _ModelDumpNamespace(SimpleNamespace):\n"
+            "    \"\"\"SimpleNamespace test double with Pydantic-style model_dump().\"\"\"\n"
+            "\n"
+            "    def model_dump(self):\n"
+            "        def convert(value):\n"
+            "            if isinstance(value, _ModelDumpNamespace):\n"
+            "                return {\n"
+            "                    key: convert(item)\n"
+            "                    for key, item in vars(value).items()\n"
+            "                }\n"
+            "\n"
+            "            if isinstance(value, list):\n"
+            "                return [convert(item) for item in value]\n"
+            "\n"
+            "            if isinstance(value, tuple):\n"
+            "                return tuple(convert(item) for item in value)\n"
+            "\n"
+            "            if isinstance(value, dict):\n"
+            "                return {\n"
+            "                    key: convert(item)\n"
+            "                    for key, item in value.items()\n"
+            "                }\n"
+            "\n"
+            "            return value\n"
+            "\n"
+            "        return {\n"
+            "            key: convert(value)\n"
+            "            for key, value in vars(self).items()\n"
+            "        }\n"
+            "\n"
+        )
+
+        lines = source.splitlines(keepends=True)
+        insert_at = 0
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+
+            if (
+                stripped.startswith("from ")
+                or stripped.startswith("import ")
+                or stripped == ""
+                or stripped.startswith("#")
+            ):
+                insert_at = idx + 1
+                continue
+
+            break
+
+        lines.insert(insert_at, class_block)
+        source = "".join(lines)
+
+    source = source.replace(
+        "SimpleNamespace(",
+        f"{class_name}(",
+    )
+
+    source = source.replace(
+        f"class {class_name}({class_name}):",
+        f"class {class_name}(SimpleNamespace):",
+    )
+
+    return source
+
+
 # =============================================================================
 # TEST-TYPE POST PROCESSING
 # =============================================================================
@@ -1555,6 +1641,10 @@ def post_process_handler(
     source = remove_nonexistent_handler_tests(
         source,
         api_config,
+    )
+
+    source = ensure_handler_mock_items_support_model_dump(
+        source,
     )
 
     return clean_blank_lines(source)
