@@ -1,3 +1,242 @@
+# ============================================================
+# api_test_config.py
+# Central configuration for API unit-test generation.
+# ============================================================
+
+from pathlib import Path
+
+API_ROOT = Path(__file__).resolve().parent
+MAIN_FUNCTION_ROOT = API_ROOT / "main-function"
+TEST_ROOT = MAIN_FUNCTION_ROOT / "tests" / "unit"
+SOURCE_ROOT = MAIN_FUNCTION_ROOT / "mt-dm-lambda-src"
+
+TEMPLATE_FILES = {
+    "db": TEST_ROOT / "db" / "test_project_financial_repo.py",
+    "model": TEST_ROOT / "domain" / "models" / "test_project_financial.py",
+    "service": TEST_ROOT / "domain" / "services" / "test_project_financial_service.py",
+    "handler": TEST_ROOT / "v1" / "test_project_financial.py",
+}
+
+DESTINATION_DIRS = {
+    "db": TEST_ROOT / "db",
+    "model": TEST_ROOT / "domain" / "models",
+    "service": TEST_ROOT / "domain" / "services",
+    "handler": TEST_ROOT / "v1",
+}
+
+TEST_TYPES = ("db", "model", "service", "handler")
+
+TEMPLATE_API = {
+    "module_name": "project_financial",
+    "route_name": "project-financial",
+    "singular_name": "project_financial",
+    "plural_name": "project_financials",
+    "source_schema": "gold",
+    "source_view": "project_financial_vw",
+    "key_column": "project_id",
+    "key_argument": "project_id",
+    "sample_key": "P-1001",
+    "sample_field": "vendor_name",
+    "sample_value": "Test Vendor",
+    "repo_module": "project_financial_repo",
+    "repo_search_function": "get_project_financial",
+    "repo_key_function": "get_project_financial_by_project_id",
+    "service_module": "project_financial_service",
+    "service_search_function": "search_project_financial",
+    "service_key_function": "get_project_financial_by_project",
+    "handler_module": "project_financial",
+    "handler_search_function": "search_project_financials",
+    "handler_key_function": "get_project_financial_details",
+    "response_model": "ProjectFinancialResponse",
+    "search_response_model": "ProjectFinancialSearchServiceResponse",
+    "default_page_size": 100,
+    "default_sort_field": "order_date",
+    "default_sort_order": "desc",
+}
+
+APIS = {
+    "po_funding_detail": {
+        "module_name": "po_funding_detail",
+        "route_name": "po-funding-detail",
+        "singular_name": "po_funding_detail",
+        "plural_name": "po_funding_detail",
+
+        "source_schema": "gold",
+        "source_view": "po_funding_detail_source_vw",
+
+        # Search API only. The current repository/service implementation does
+        # NOT expose a separate get_po_funding_detail_by_* lookup function.
+        "key_column": "proj_id",
+        "key_argument": "proj_id",
+        "sample_key": "P-1001",
+
+        # PoFundingDetailResponse does not expose proj_id.
+        # Use po_id for generated response-model assertions while retaining
+        # proj_id for repository/search filtering.
+        "response_key_field": "po_id",
+
+        "sample_field": "proj_name",
+        "sample_value": "Test Project",
+
+        "repo_module": "po_funding_detail_repo",
+        "repo_search_function": "get_po_funding_detail",
+        "repo_key_function": None,
+
+        "service_module": "po_funding_detail_service",
+        "service_search_function": "search_po_funding_detail",
+        "service_key_function": None,
+
+        "handler_module": "po_funding_detail",
+        "handler_search_function": "search_po_funding_detail_v1",
+        "handler_key_function": None,
+        "handler_details_function": None,
+
+        "response_model": "PoFundingDetailResponse",
+        "search_response_model": "PoFundingDetailSearchServiceResponse",
+
+        "default_page_size": 100,
+        "default_sort_field": "proj_id",
+        "default_sort_order": "asc",
+
+        "supports_search": True,
+        "supports_key_lookup": False,
+        "supports_handler_key_lookup": False,
+        "supports_filters": True,
+        "supports_sort": True,
+        "supports_pagination": True,
+        "supports_columns": True,
+        "uses_pagination_model": True,
+        "lookup_supports_filters": False,
+
+        "search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+
+        "service_key_parameters": [],
+        "repo_key_parameters": [],
+
+        "api_names": [
+            "project_financials",
+            "project_financial",
+            "project-financials",
+            "project-financial",
+            "po_funding_detail",
+            "po-funding-detail",
+        ],
+
+        "sample_filter_data": {
+            "vendor_name": "proj_name",
+            "customer_name": "proj_name",
+            "cust_name": "proj_name",
+            "Test Vendor": "Test Project",
+            "Test Customer": "Test Project",
+        },
+    },
+}
+
+
+def get_api_config(api_name: str) -> dict:
+    if api_name not in APIS:
+        available = ", ".join(sorted(APIS))
+        raise KeyError(
+            f"Unknown API '{api_name}'. Available APIs: {available}"
+        )
+    return APIS[api_name]
+
+
+def get_template_file(test_type: str) -> Path:
+    if test_type not in TEMPLATE_FILES:
+        raise KeyError(f"Unknown test type: {test_type}")
+    return TEMPLATE_FILES[test_type]
+
+
+def get_destination_dir(test_type: str) -> Path:
+    if test_type not in DESTINATION_DIRS:
+        raise KeyError(f"Unknown test type: {test_type}")
+    return DESTINATION_DIRS[test_type]
+
+
+def validate_config() -> None:
+    required_api_fields = [
+        "module_name",
+        "key_column",
+        "sample_key",
+        "repo_search_function",
+        "service_search_function",
+        "handler_search_function",
+        "response_model",
+        "search_response_model",
+    ]
+
+    errors = []
+    for api_name, config in APIS.items():
+        for field in required_api_fields:
+            if field not in config:
+                errors.append(f"{api_name}: missing '{field}'")
+
+        if config.get("supports_key_lookup"):
+            if not config.get("repo_key_function"):
+                errors.append(
+                    f"{api_name}: supports_key_lookup=True but repo_key_function is missing"
+                )
+            if not config.get("service_key_function"):
+                errors.append(
+                    f"{api_name}: supports_key_lookup=True but service_key_function is missing"
+                )
+
+        if config.get("supports_handler_key_lookup"):
+            if not (
+                config.get("handler_details_function")
+                or config.get("handler_key_function")
+            ):
+                errors.append(
+                    f"{api_name}: supports_handler_key_lookup=True but handler function is missing"
+                )
+
+    if errors:
+        raise ValueError(
+            "Invalid api_test_config.py:\n" + "\n".join(errors)
+        )
+
+
+if __name__ == "__main__":
+    validate_config()
+
+    print()
+    print("=" * 80)
+    print("API TEST CONFIGURATION")
+    print("=" * 80)
+    print(f"API_ROOT:           {API_ROOT}")
+    print(f"MAIN_FUNCTION_ROOT: {MAIN_FUNCTION_ROOT}")
+    print(f"TEST_ROOT:          {TEST_ROOT}")
+    print(f"SOURCE_ROOT:        {SOURCE_ROOT}")
+    print()
+
+    print("Template files")
+    print("-" * 80)
+    for test_type, path in TEMPLATE_FILES.items():
+        print(f"{test_type:<10} {path} exists={path.exists()}")
+
+    print()
+    print("Configured APIs")
+    print("-" * 80)
+    for api_name, config in APIS.items():
+        print(
+            f"{api_name:<25} "
+            f"search={config['repo_search_function']:<30} "
+            f"key_lookup={config.get('supports_key_lookup', False)}"
+        )
+
+    print()
+    print("Configuration OK")
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
 """
 generate_api_tests.py
 
@@ -217,6 +456,17 @@ def prepare_api_config(
         default=f"{module_name}_vw",
     )
 
+    # Field to use when validating a returned response model in generated
+    # tests. This can differ from the repository/filter key column.
+    #
+    # Example: po_funding_detail filters by proj_id, while its Pydantic
+    # response model exposes po_id/project_id rather than proj_id.
+    response_key_field = first_config_value(
+        config,
+        "response_key_field",
+        default=key_column,
+    )
+
     repo_search_function = first_config_value(
         config,
         "repo_search_function",
@@ -385,6 +635,7 @@ def prepare_api_config(
             "key_param": key_param,
             "sample_key": sample_key,
             "source_view": source_view,
+            "response_key_field": response_key_field,
             "repo_search_function": repo_search_function,
             "repo_key_function": repo_key_function,
             "service_search_function": service_search_function,
@@ -1021,6 +1272,105 @@ def fix_key_parameter(
         )
 
     return source
+
+
+
+# =============================================================================
+# RESPONSE MODEL FIELD NORMALIZATION
+# =============================================================================
+
+
+def fix_response_model_key_assertions(
+    source: str,
+    api_config: Dict[str, Any],
+) -> str:
+    """
+    Keep repository/filter keys separate from response-model keys.
+
+    Some APIs filter by one field but expose a different field in the Pydantic
+    response model.  For example po_funding_detail uses proj_id as its search
+    key, while PoFundingDetailResponse exposes po_id/project_id.
+
+    Only test fixture assignments and returned-model assertions are changed;
+    repository filters and API key-column behavior are left untouched.
+    """
+
+    key_column = str(api_config["key_column"])
+    response_key_field = str(
+        api_config.get("response_key_field") or key_column
+    )
+
+    if response_key_field == key_column:
+        return source
+
+    # Example:
+    # sample_po_funding_detail_dict["proj_id"] = expected_proj_id
+    # becomes:
+    # sample_po_funding_detail_dict["po_id"] = expected_proj_id
+    source = re.sub(
+        rf'(?P<prefix>\bsample_[A-Za-z0-9_]+_dict\s*\[\s*["\'])'
+        rf'{re.escape(key_column)}'
+        rf'(?P<suffix>["\']\s*\]\s*=\s*expected_[A-Za-z0-9_]+)',
+        lambda match: (
+            match.group("prefix")
+            + response_key_field
+            + match.group("suffix")
+        ),
+        source,
+    )
+
+    # Returned Pydantic model assertion only.
+    source = re.sub(
+        rf'(\bresult\.items\[0\]\.){re.escape(key_column)}\b',
+        rf'\1{response_key_field}',
+        source,
+    )
+
+    return source
+
+
+def normalize_no_filter_test_expectations(
+    source: str,
+) -> str:
+    """
+    Match the actual service behavior for filters=None.
+
+    The service converts dict filters to FiltersEnvelope, but deliberately
+    keeps None as None. Generated *_no_filters tests must therefore assert
+    that the repository receives filters=None rather than an empty envelope.
+    """
+
+    blocks = iter_test_function_blocks(source)
+    replacements: list[tuple[int, int, str]] = []
+
+    for start, end, test_name, block in blocks:
+        if not test_name.endswith("_no_filters"):
+            continue
+
+        updated = block
+
+        updated = re.sub(
+            r'(?m)^[ \t]*assert\s+isinstance\(\s*kwargs\["filters"\]\s*,\s*'
+            r'FiltersEnvelope\s*\)\s*$',
+            '    assert kwargs["filters"] is None',
+            updated,
+        )
+
+        updated = re.sub(
+            r'(?m)^[ \t]*assert\s+kwargs\["filters"\]\.filters\s*==\s*\{\}\s*$',
+            '',
+            updated,
+        )
+
+        updated = clean_blank_lines(updated)
+
+        if updated != block:
+            replacements.append((start, end, updated))
+
+    for start, end, updated in reversed(replacements):
+        source = source[:start] + updated + source[end:]
+
+    return clean_blank_lines(source)
 
 
 # =============================================================================
@@ -1938,6 +2288,15 @@ def post_process_model(
         api_config,
     )
 
+    source = fix_response_model_key_assertions(
+        source,
+        api_config,
+    )
+
+    source = normalize_no_filter_test_expectations(
+        source,
+    )
+
     source = remove_unsupported_lookup_tests(
         source,
         api_config,
@@ -1965,6 +2324,15 @@ def post_process_service(
     source = fix_key_parameter(
         source,
         api_config,
+    )
+
+    source = fix_response_model_key_assertions(
+        source,
+        api_config,
+    )
+
+    source = normalize_no_filter_test_expectations(
+        source,
     )
 
     source = fix_none_filter_expectations(
