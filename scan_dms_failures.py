@@ -223,12 +223,15 @@ def prepare_api_config(
         default=f"get_{module_name}",
     )
 
-    repo_key_function = first_config_value(
+    # Key/detail lookup names must NOT be invented unless the API explicitly
+    # supports a separate lookup operation.  The old generator always derived
+    # get_<api>_by_<key>, which created tests for functions that did not exist.
+    configured_repo_key_function = first_config_value(
         config,
         "repo_key_function",
         "lookup_function",
         "repo_lookup_function",
-        default=f"get_{module_name}_by_{key_param}",
+        default=None,
     )
 
     service_search_function = first_config_value(
@@ -238,12 +241,12 @@ def prepare_api_config(
         default=f"search_{plural_name}",
     )
 
-    service_key_function = first_config_value(
+    configured_service_key_function = first_config_value(
         config,
         "service_key_function",
         "details_function",
         "service_lookup_function",
-        default=f"get_{module_name}_by_{key_param}",
+        default=None,
     )
 
     # IMPORTANT:
@@ -282,13 +285,36 @@ def prepare_api_config(
         )
     )
 
+    # Safe default: only generate key/detail lookup tests when the config
+    # explicitly declares a lookup function (or explicitly sets the flag).
+    # This prevents accidental generation of nonexistent functions such as
+    # get_po_funding_detail_by_id.
+    inferred_key_lookup = bool(
+        configured_repo_key_function
+        or configured_service_key_function
+        or handler_details_function
+    )
+
     supports_key_lookup = bool(
         first_config_value(
             config,
             "supports_key_lookup",
-            default=True,
+            default=inferred_key_lookup,
         )
     )
+
+    if supports_key_lookup:
+        repo_key_function = (
+            configured_repo_key_function
+            or f"get_{module_name}_by_{key_param}"
+        )
+        service_key_function = (
+            configured_service_key_function
+            or f"get_{module_name}_by_{key_param}"
+        )
+    else:
+        repo_key_function = None
+        service_key_function = None
 
     supports_filters = bool(
         first_config_value(
@@ -1393,7 +1419,17 @@ def remove_name_from_imports(source: str, name: str) -> str:
             return ""
         return match.group("prefix") + ", ".join(names)
 
-    return pattern.sub(repl, source)
+    source = pattern.sub(repl, source)
+
+    # If the removed symbol was the only item in a parenthesized import,
+    # remove the now-empty import statement as well.
+    source = re.sub(
+        r"(?ms)^from\s+[A-Za-z0-9_\.]+\s+import\s*\(\s*\)\s*\n?",
+        "",
+        source,
+    )
+
+    return source
 
 
 def remove_unsupported_lookup_tests(source: str, api_config: Dict[str, Any]) -> str:
