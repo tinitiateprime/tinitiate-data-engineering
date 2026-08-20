@@ -1,14 +1,27 @@
 """
 generate_api_tests.py
 
-Config-driven unit-test generator using the manager-approved Contract tests
-as the behavioral baseline.
+Config-driven API unit-test generator.
 
-Important:
-- It does not invent get_*_by_id functions.
-- It validates configured function names against the real source tree.
-- It validates configured parameter names against real function signatures.
-- It writes only syntactically valid Python.
+Behavioral baseline:
+- Manager-approved Contract repository tests
+- Manager-approved Contract model tests
+- Manager-approved Contract service tests
+- Manager-approved handler tests
+
+Design goals:
+1. API-specific behavior lives in api_test_config.py.
+2. The generator validates config against the real source before writing tests.
+3. Lookup/detail functions are NEVER invented.
+4. Pydantic model test data is generated from actual field annotations.
+5. APIs can support:
+      - search/list only
+      - required-key search
+      - search + separate detail/key lookup
+      - optional list handler in addition to POST search
+6. Both source layouts are supported:
+      - main-function/mt-dm-lambda-src/...
+      - generated/...
 """
 
 from __future__ import annotations
@@ -18,7 +31,7 @@ import ast
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from api_test_config import (
     API_ROOT,
@@ -30,11 +43,23 @@ from api_test_config import (
 )
 
 
+# =============================================================================
+# GENERAL HELPERS
+# =============================================================================
+
+
 def snake_to_pascal(value: str) -> str:
-    return "".join(part.capitalize() for part in value.split("_") if part)
+    return "".join(
+        part.capitalize()
+        for part in value.split("_")
+        if part
+    )
 
 
-def destination_file(test_type: str, cfg: dict[str, Any]) -> Path:
+def destination_file(
+    test_type: str,
+    cfg: dict[str, Any],
+) -> Path:
     root = Path(DESTINATION_DIRS[test_type])
     module = cfg["module_name"]
 
@@ -44,32 +69,20 @@ def destination_file(test_type: str, cfg: dict[str, Any]) -> Path:
         "service": f"test_{module}_service.py",
         "handler": f"test_{module}.py",
     }
+
     return root / names[test_type]
 
 
-def source_file(test_type: str, cfg: dict[str, Any]) -> Path:
+def source_file(
+    test_type: str,
+    cfg: dict[str, Any],
+) -> Path:
     """
-    Resolve the REAL implementation file.
+    Resolve the real implementation file.
 
-    Supports both layouts used in this project:
-
-    1. Normal repository layout:
-       main-function/mt-dm-lambda-src/
-           db/repositories/
-           domain/models/
-           domain/services/
-           v1/handlers/
-
-    2. Generator output layout:
-       generated/
-           repositories/
-           models/
-           services/
-           handlers/
-
-    The first existing path wins. This keeps the generator reusable whether
-    the API has already been moved into main-function or still lives under
-    generated/.
+    Supports both:
+      main-function/mt-dm-lambda-src/...
+      generated/...
     """
     module = cfg["module_name"]
 
@@ -102,41 +115,63 @@ def source_file(test_type: str, cfg: dict[str, Any]) -> Path:
         ]
 
     else:
-        raise ValueError(test_type)
+        raise ValueError(
+            f"Unknown test type: {test_type}"
+        )
 
     for candidate in candidates:
         if candidate.exists():
             return candidate
 
-    searched = "\n".join(f"  - {path}" for path in candidates)
+    searched = "\n".join(
+        f"  - {candidate}"
+        for candidate in candidates
+    )
+
     raise FileNotFoundError(
-        f"Source file not found for {test_type} '{module}'. "
-        f"Searched:\n{searched}"
+        f"Source file not found for {test_type} "
+        f"'{module}'. Searched:\n{searched}"
     )
 
 
 def parse_file(path: Path) -> ast.Module:
     if not path.exists():
-        raise FileNotFoundError(f"Source file not found: {path}")
+        raise FileNotFoundError(
+            f"Source file not found: {path}"
+        )
 
-    text = path.read_text(encoding="utf-8-sig")
+    text = path.read_text(
+        encoding="utf-8-sig"
+    )
+
     try:
         return ast.parse(text)
     except SyntaxError as exc:
-        raise ValueError(f"Cannot parse {path}: {exc}") from exc
+        raise ValueError(
+            f"Cannot parse {path}: {exc}"
+        ) from exc
 
 
-def function_map(path: Path) -> dict[str, ast.AST]:
+def function_map(
+    path: Path,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     tree = parse_file(path)
+
     return {
         node.name: node
         for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        )
     }
 
 
-def class_map(path: Path) -> dict[str, ast.ClassDef]:
+def class_map(
+    path: Path,
+) -> dict[str, ast.ClassDef]:
     tree = parse_file(path)
+
     return {
         node.name: node
         for node in tree.body
@@ -144,32 +179,60 @@ def class_map(path: Path) -> dict[str, ast.ClassDef]:
     }
 
 
-def function_parameters(path: Path, function_name: str) -> list[str]:
-    node = function_map(path).get(function_name)
+def function_parameters(
+    path: Path,
+    function_name: str,
+) -> list[str]:
+    node = function_map(path).get(
+        function_name
+    )
+
     if node is None:
         return []
 
     names = (
-        [a.arg for a in node.args.posonlyargs]
-        + [a.arg for a in node.args.args]
-        + [a.arg for a in node.args.kwonlyargs]
+        [arg.arg for arg in node.args.posonlyargs]
+        + [arg.arg for arg in node.args.args]
+        + [arg.arg for arg in node.args.kwonlyargs]
     )
 
-    if names and names[0] in {"self", "cls"}:
+    if names and names[0] in {
+        "self",
+        "cls",
+    }:
         names = names[1:]
 
     return names
 
 
-def model_fields(path: Path, class_name: str) -> list[str]:
+def model_field_specs(
+    path: Path,
+    class_name: str,
+) -> list[tuple[str, Optional[ast.expr]]]:
+    """
+    Return (field_name, annotation_ast) for Pydantic fields.
+    """
     node = class_map(path).get(class_name)
+
     if node is None:
         return []
 
-    result = []
+    result: list[
+        tuple[str, Optional[ast.expr]]
+    ] = []
+
     for item in node.body:
-        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-            result.append(item.target.id)
+        if (
+            isinstance(item, ast.AnnAssign)
+            and isinstance(item.target, ast.Name)
+        ):
+            result.append(
+                (
+                    item.target.id,
+                    item.annotation,
+                )
+            )
+
     return result
 
 
@@ -179,11 +242,469 @@ def require_function(
     label: str,
 ) -> None:
     if not function_name:
-        raise ValueError(f"{label}: function name is missing")
+        raise ValueError(
+            f"{label}: function name is missing"
+        )
 
     if function_name not in function_map(path):
         raise ValueError(
-            f"{label}: '{function_name}' does not exist in {path}"
+            f"{label}: '{function_name}' does not "
+            f"exist in {path}"
+        )
+
+
+# =============================================================================
+# ANNOTATION-AWARE TEST DATA
+# =============================================================================
+
+
+def annotation_name(
+    annotation: Optional[ast.expr],
+) -> str:
+    if annotation is None:
+        return ""
+
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+
+    if isinstance(annotation, ast.Attribute):
+        parent = annotation_name(
+            annotation.value
+        )
+        if parent:
+            return (
+                f"{parent}.{annotation.attr}"
+            )
+        return annotation.attr
+
+    if isinstance(annotation, ast.Subscript):
+        return annotation_name(
+            annotation.value
+        )
+
+    if isinstance(annotation, ast.Constant):
+        return str(annotation.value)
+
+    return ""
+
+
+def subscript_args(
+    annotation: Optional[ast.expr],
+) -> list[ast.expr]:
+    if not isinstance(
+        annotation,
+        ast.Subscript,
+    ):
+        return []
+
+    value = annotation.slice
+
+    if isinstance(value, ast.Tuple):
+        return list(value.elts)
+
+    return [value]
+
+
+def unwrap_optional(
+    annotation: Optional[ast.expr],
+) -> Optional[ast.expr]:
+    """
+    Optional[T] -> T
+    Union[T, None] -> T
+    T | None -> T
+    """
+    if annotation is None:
+        return None
+
+    # Python typing.Optional / Union
+    if isinstance(annotation, ast.Subscript):
+        base = annotation_name(
+            annotation.value
+        )
+
+        if base in {
+            "Optional",
+            "typing.Optional",
+        }:
+            args = subscript_args(
+                annotation
+            )
+            return (
+                args[0]
+                if args
+                else annotation
+            )
+
+        if base in {
+            "Union",
+            "typing.Union",
+        }:
+            args = subscript_args(
+                annotation
+            )
+
+            non_none = [
+                arg
+                for arg in args
+                if annotation_name(arg)
+                not in {
+                    "None",
+                    "NoneType",
+                }
+            ]
+
+            if len(non_none) == 1:
+                return non_none[0]
+
+    # Python 3.10: T | None
+    if (
+        isinstance(annotation, ast.BinOp)
+        and isinstance(
+            annotation.op,
+            ast.BitOr,
+        )
+    ):
+        left = annotation.left
+        right = annotation.right
+
+        if annotation_name(right) in {
+            "None",
+            "NoneType",
+        }:
+            return left
+
+        if annotation_name(left) in {
+            "None",
+            "NoneType",
+        }:
+            return right
+
+    return annotation
+
+
+def sample_value_from_annotation(
+    field: str,
+    annotation: Optional[ast.expr],
+    cfg: dict[str, Any],
+) -> Any:
+    """
+    Create a valid representative value from the real annotation.
+
+    Examples:
+      Optional[List[str]] -> ["test_value"]
+      Optional[int]       -> 1
+      Optional[float]     -> 1.0
+      Optional[bool]      -> True
+      Optional[date]      -> "2026-01-01"
+      Optional[Any]       -> {"test": "value"}
+      str                 -> "test_field"
+    """
+
+    if field == cfg["key_column"]:
+        return cfg["sample_key"]
+
+    if (
+        field
+        == cfg.get("response_key_field")
+    ):
+        return cfg["sample_key"]
+
+    if field == cfg.get("sample_field"):
+        return cfg.get(
+            "sample_value",
+            "Test Value",
+        )
+
+    annotation = unwrap_optional(
+        annotation
+    )
+
+    base = annotation_name(
+        annotation
+    ).split(".")[-1]
+
+    # Collections
+    if isinstance(
+        annotation,
+        ast.Subscript,
+    ):
+        container = annotation_name(
+            annotation.value
+        ).split(".")[-1]
+
+        args = subscript_args(
+            annotation
+        )
+
+        if container in {
+            "List",
+            "list",
+            "Sequence",
+            "Iterable",
+            "Set",
+            "set",
+            "Tuple",
+            "tuple",
+        }:
+            inner = (
+                args[0]
+                if args
+                else None
+            )
+
+            inner_value = (
+                sample_value_from_annotation(
+                    f"{field}_item",
+                    inner,
+                    cfg,
+                )
+            )
+
+            if container in {
+                "Set",
+                "set",
+            }:
+                return {
+                    inner_value
+                }
+
+            if container in {
+                "Tuple",
+                "tuple",
+            }:
+                return (
+                    inner_value,
+                )
+
+            return [
+                inner_value
+            ]
+
+        if container in {
+            "Dict",
+            "dict",
+            "Mapping",
+        }:
+            return {
+                "test": "value"
+            }
+
+    # Scalars
+    if base in {
+        "int",
+        "Integer",
+    }:
+        return 1
+
+    if base in {
+        "float",
+        "Decimal",
+    }:
+        return 1.0
+
+    if base == "bool":
+        return True
+
+    if base in {
+        "date",
+        "datetime",
+    }:
+        return "2026-01-01"
+
+    if base in {
+        "Any",
+        "object",
+    }:
+        return {
+            "test": "value"
+        }
+
+    if base in {
+        "bytes",
+        "bytearray",
+    }:
+        return b"test"
+
+    # Helpful fallbacks from field names.
+    if field in {
+        "row_id",
+        "id",
+        "period",
+        "sub_pd_no",
+    }:
+        return 1
+
+    if "count" in field.lower():
+        return 1
+
+    if "date" in field.lower():
+        return "2026-01-01"
+
+    if field.endswith("_fl"):
+        return "Y"
+
+    return f"test_{field}"
+
+
+def complete_model_payload(
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    model_path = source_file(
+        "model",
+        cfg,
+    )
+
+    specs = model_field_specs(
+        model_path,
+        cfg["response_model"],
+    )
+
+    if not specs:
+        raise ValueError(
+            f"No fields found for "
+            f"{cfg['response_model']} "
+            f"in {model_path}"
+        )
+
+    return {
+        field: sample_value_from_annotation(
+            field,
+            annotation,
+            cfg,
+        )
+        for field, annotation in specs
+    }
+
+
+def dict_literal(
+    data: dict[str, Any],
+    indent: int = 4,
+) -> str:
+    pad = " " * indent
+    lines = ["{"]
+
+    for key, value in data.items():
+        lines.append(
+            f'{pad}"{key}": {value!r},'
+        )
+
+    lines.append("}")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# CALL ARGUMENT HELPERS
+# =============================================================================
+
+
+def call_args(
+    cfg: dict[str, Any],
+    parameters: list[str],
+    *,
+    use_any: bool = False,
+    force_key: bool = False,
+) -> list[str]:
+    key = cfg["key_argument"]
+
+    values = {
+        key: repr(
+            cfg["sample_key"]
+        ),
+        "filters": (
+            "ANY"
+            if use_any
+            else "filters"
+        ),
+        "sort": (
+            "ANY"
+            if use_any
+            else "sort"
+        ),
+        "page": (
+            "ANY"
+            if use_any
+            else "page"
+        ),
+        "columns": (
+            "ANY"
+            if use_any
+            else "columns"
+        ),
+        "limit": (
+            "ANY"
+            if use_any
+            else "10"
+        ),
+        "cursor": (
+            "ANY"
+            if use_any
+            else "None"
+        ),
+    }
+
+    result: list[str] = []
+
+    for name in parameters:
+        if (
+            name == key
+            and not force_key
+            and not cfg.get(
+                "search_requires_key",
+                False,
+            )
+        ):
+            continue
+
+        result.append(
+            f"{name}="
+            f"{values.get(name, 'ANY' if use_any else 'None')}"
+        )
+
+    return result
+
+
+def multiline_args(
+    args: list[str],
+    spaces: int = 8,
+) -> str:
+    if not args:
+        return ""
+
+    pad = " " * spaces
+
+    return (
+        ",\n" + pad
+    ).join(args)
+
+
+# =============================================================================
+# CONFIG/SOURCE VALIDATION
+# =============================================================================
+
+
+def validate_parameter_list(
+    path: Path,
+    function_name: str,
+    configured: list[str],
+    label: str,
+) -> None:
+    real = function_parameters(
+        path,
+        function_name,
+    )
+
+    invalid = [
+        name
+        for name in configured
+        if name not in real
+    ]
+
+    if invalid:
+        raise ValueError(
+            f"{label} has invalid parameter(s) "
+            f"{invalid}. Real signature for "
+            f"{function_name}: {real}"
         )
 
 
@@ -192,220 +713,259 @@ def validate_config_against_source(
 ) -> dict[str, Any]:
     cfg = dict(raw_cfg)
 
-    repo_path = source_file("db", cfg)
-    model_path = source_file("model", cfg)
-    service_path = source_file("service", cfg)
-    handler_path = source_file("handler", cfg)
+    repo_path = source_file(
+        "db",
+        cfg,
+    )
+    model_path = source_file(
+        "model",
+        cfg,
+    )
+    service_path = source_file(
+        "service",
+        cfg,
+    )
+    handler_path = source_file(
+        "handler",
+        cfg,
+    )
 
     require_function(
         repo_path,
         cfg["repo_search_function"],
         "Repository search",
     )
+
     require_function(
         service_path,
         cfg["service_search_function"],
         "Service search",
     )
+
     require_function(
         handler_path,
         cfg["handler_search_function"],
         "Handler search",
     )
 
-    if cfg.get("supports_key_lookup", False):
+    validate_parameter_list(
+        repo_path,
+        cfg["repo_search_function"],
+        cfg.get(
+            "repo_search_parameters",
+            [],
+        ),
+        "repo_search_parameters",
+    )
+
+    validate_parameter_list(
+        service_path,
+        cfg["service_search_function"],
+        cfg.get(
+            "service_search_parameters",
+            [],
+        ),
+        "service_search_parameters",
+    )
+
+    if cfg.get(
+        "supports_key_lookup",
+        False,
+    ):
         require_function(
             repo_path,
-            cfg.get("repo_key_function"),
+            cfg.get(
+                "repo_key_function"
+            ),
             "Repository key lookup",
         )
+
         require_function(
             service_path,
-            cfg.get("service_key_function"),
+            cfg.get(
+                "service_key_function"
+            ),
             "Service key lookup",
         )
+
+        validate_parameter_list(
+            repo_path,
+            cfg["repo_key_function"],
+            cfg.get(
+                "repo_key_parameters",
+                [],
+            ),
+            "repo_key_parameters",
+        )
+
+        validate_parameter_list(
+            service_path,
+            cfg["service_key_function"],
+            cfg.get(
+                "service_key_parameters",
+                [],
+            ),
+            "service_key_parameters",
+        )
+
     else:
-        # Never invent lookup functions.
         cfg["repo_key_function"] = None
         cfg["service_key_function"] = None
 
-    if cfg["response_model"] not in class_map(model_path):
-        raise ValueError(
-            f"Response model '{cfg['response_model']}' does not exist "
-            f"in {model_path}"
+    if cfg.get(
+        "supports_handler_key_lookup",
+        False,
+    ):
+        require_function(
+            handler_path,
+            cfg.get(
+                "handler_key_function"
+            ),
+            "Handler key lookup",
         )
 
-    signature_checks = (
-        (
-            repo_path,
-            cfg["repo_search_function"],
-            cfg["repo_search_parameters"],
-            "repo_search_parameters",
-        ),
-        (
-            service_path,
-            cfg["service_search_function"],
-            cfg["service_search_parameters"],
-            "service_search_parameters",
-        ),
-    )
+    if cfg.get(
+        "supports_list",
+        False,
+    ):
+        require_function(
+            handler_path,
+            cfg.get(
+                "handler_list_function"
+            ),
+            "Handler list",
+        )
 
-    for path, fn, configured, label in signature_checks:
-        real = function_parameters(path, fn)
-        invalid = [name for name in configured if name not in real]
-        if invalid:
-            raise ValueError(
-                f"{label} has invalid parameter(s) {invalid}. "
-                f"Real signature for {fn}: {real}"
-            )
+    if (
+        cfg["response_model"]
+        not in class_map(model_path)
+    ):
+        raise ValueError(
+            f"Response model "
+            f"'{cfg['response_model']}' "
+            f"does not exist in "
+            f"{model_path}"
+        )
 
     return cfg
 
 
-def sample_value(field: str, cfg: dict[str, Any]) -> Any:
-    if field == cfg["key_column"]:
-        return cfg["sample_key"]
-    if field == cfg.get("response_key_field"):
-        return cfg["sample_key"]
-    if field == cfg.get("sample_field"):
-        return cfg.get("sample_value", "Test Value")
-    if field in {"row_id", "id", "period", "sub_pd_no"}:
-        return 1
-    if "date" in field.lower():
-        return "2026-01-01"
-    if field.endswith("_fl"):
-        return "Y"
-    return f"test_{field}"
+# =============================================================================
+# REPOSITORY TEST GENERATION
+# =============================================================================
 
 
-def dict_literal(data: dict[str, Any], indent: int = 4) -> str:
-    pad = " " * indent
-    lines = ["{"]
-    for key, value in data.items():
-        lines.append(f'{pad}"{key}": {value!r},')
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def search_call_args(
+def execute_query_assertion(
     cfg: dict[str, Any],
-    parameters: list[str],
     *,
-    use_any: bool = False,
-) -> list[str]:
-    key = cfg["key_argument"]
-    values = {
-        key: repr(cfg["sample_key"]),
-        "filters": "ANY" if use_any else "filters",
-        "sort": "ANY" if use_any else "sort",
-        "page": "ANY" if use_any else "page",
-        "columns": "ANY" if use_any else "columns",
-        "limit": "ANY" if use_any else "10",
-        "cursor": "ANY" if use_any else "None",
-    }
+    page_expr: str = "10",
+) -> str:
+    if cfg.get(
+        "repo_execute_query_passes_limit",
+        False,
+    ):
+        return f"""    mock_execute.assert_called_once_with(
+        mock_plan.sql,
+        mock_plan.params,
+        limit={page_expr},
+    )"""
 
-    result = []
-    for name in parameters:
-        if name == key and not cfg.get("search_requires_key", False):
-            continue
-        result.append(f"{name}={values.get(name, 'ANY' if use_any else 'None')}")
-    return result
+    return """    mock_execute.assert_called_once_with(
+        mock_plan.sql,
+        mock_plan.params,
+    )"""
 
 
-def multiline_args(args: list[str], spaces: int = 8) -> str:
-    if not args:
-        return ""
-    pad = " " * spaces
-    return (",\n" + pad).join(args)
-
-
-def generate_db(cfg: dict[str, Any]) -> str:
+def generate_db_search_tests(
+    cfg: dict[str, Any],
+) -> str:
     repo = cfg["repo_module"]
     fn = cfg["repo_search_function"]
-    params = cfg["repo_search_parameters"]
+    params = cfg[
+        "repo_search_parameters"
+    ]
 
-    call_args = multiline_args(
-        search_call_args(cfg, params),
+    search_args = multiline_args(
+        call_args(
+            cfg,
+            params,
+        ),
         8,
     )
 
-    # The builder receives the common list-plan args. The required contract_id
-    # for Agent is injected into filters by the real repository.
     builder_args = []
-    for name in ("filters", "sort", "page", "columns"):
+
+    for name in (
+        "filters",
+        "sort",
+        "page",
+        "columns",
+    ):
         if name in params:
-            builder_args.append(f"{name}=ANY")
+            builder_args.append(
+                f"{name}=ANY"
+            )
 
-    builder_text = multiline_args(builder_args, 8)
-
-    if cfg.get("repo_execute_query_passes_limit", False):
-        execute_assert = """    mock_execute.assert_called_once_with(
-        mock_plan.sql,
-        mock_plan.params,
-        limit=10,
+    builder_text = multiline_args(
+        builder_args,
+        8,
     )
-"""
-    else:
-        execute_assert = """    mock_execute.assert_called_once_with(
-        mock_plan.sql,
-        mock_plan.params,
-    )
-"""
 
     key_check = ""
-    if cfg.get("search_requires_key", False):
+
+    if cfg.get(
+        "search_requires_key",
+        False,
+    ):
         key_check = f"""
     args, _kwargs = mock_execute.call_args
-    params = args[1]
-    if isinstance(params, dict):
+    sql_params = args[1]
+    if isinstance(sql_params, dict):
         assert any(
             value == {cfg['sample_key']!r}
-            for value in params.values()
+            for value in sql_params.values()
         )
 """
 
-    return f"""# AUTO-GENERATED by generate_api_tests.py
-# Manager Contract repository tests are the behavioral baseline.
-
-from unittest.mock import ANY, MagicMock, patch
-
-import pytest
-
-from db.repositories import {repo}
-from v1.schemas import FiltersEnvelope, PaginationModel, SortModel
-
-
-@pytest.fixture
-def mock_plan():
-    plan = MagicMock()
-    plan.sql = "SELECT * FROM generated_test_source"
-    plan.params = {{}}
-    return plan
-
-
+    return f"""
 @patch("db.repositories.{repo}.execute_query")
 @patch("db.repositories.{repo}._builder.get_list_plan")
-def test_{fn}_success(mock_get_plan, mock_execute, mock_plan):
+def test_{fn}_success(
+    mock_get_plan,
+    mock_execute,
+    mock_plan,
+):
     mock_get_plan.return_value = mock_plan
     mock_execute.return_value = {{
-        "items": [{{"{cfg['key_column']}": {cfg['sample_key']!r}}}],
-        "page": {{"cursor": None, "has_more": False}},
+        "items": [
+            {{
+                "{cfg['key_column']}": {cfg['sample_key']!r},
+            }}
+        ],
+        "page": {{
+            "cursor": None,
+            "has_more": False,
+        }},
     }}
 
-    filters = FiltersEnvelope(filters={{}})
+    filters = FiltersEnvelope(
+        filters={{}}
+    )
     sort = SortModel()
-    page = PaginationModel(limit=10)
+    page = PaginationModel(
+        limit=10
+    )
     columns = None
 
     result = {repo}.{fn}(
-        {call_args}
+        {search_args}
     )
 
     mock_get_plan.assert_called_once_with(
         {builder_text}
     )
 
-{execute_assert.rstrip()}
+{execute_query_assertion(cfg)}
 
     assert isinstance(result, dict)
     assert "items" in result
@@ -414,20 +974,31 @@ def test_{fn}_success(mock_get_plan, mock_execute, mock_plan):
 
 @patch("db.repositories.{repo}.execute_query")
 @patch("db.repositories.{repo}._builder.get_list_plan")
-def test_{fn}_empty(mock_get_plan, mock_execute, mock_plan):
+def test_{fn}_empty(
+    mock_get_plan,
+    mock_execute,
+    mock_plan,
+):
     mock_get_plan.return_value = mock_plan
     mock_execute.return_value = {{
         "items": [],
-        "page": {{"cursor": None, "has_more": False}},
+        "page": {{
+            "cursor": None,
+            "has_more": False,
+        }},
     }}
 
-    filters = FiltersEnvelope(filters={{}})
+    filters = FiltersEnvelope(
+        filters={{}}
+    )
     sort = SortModel()
-    page = PaginationModel(limit=10)
+    page = PaginationModel(
+        limit=10
+    )
     columns = None
 
     result = {repo}.{fn}(
-        {call_args}
+        {search_args}
     )
 
     assert isinstance(result, dict)
@@ -435,25 +1006,187 @@ def test_{fn}_empty(mock_get_plan, mock_execute, mock_plan):
 """
 
 
-def generate_model(cfg: dict[str, Any]) -> str:
-    module = cfg["module_name"]
-    model = cfg["response_model"]
-    fields = model_fields(source_file("model", cfg), model)
+def generate_db_lookup_tests(
+    cfg: dict[str, Any],
+) -> str:
+    if not cfg.get(
+        "supports_key_lookup",
+        False,
+    ):
+        return ""
 
-    if not fields:
-        raise ValueError(
-            f"No Pydantic fields found for {model}"
+    repo = cfg["repo_module"]
+    fn = cfg["repo_key_function"]
+
+    params = cfg.get(
+        "repo_key_parameters",
+        [],
+    )
+
+    lookup_args = multiline_args(
+        call_args(
+            cfg,
+            params,
+            force_key=True,
+        ),
+        8,
+    )
+
+    return f"""
+@patch("db.repositories.{repo}.execute_query")
+@patch("db.repositories.{repo}._builder.get_list_plan")
+def test_{fn}_found(
+    mock_get_plan,
+    mock_execute,
+    mock_plan,
+):
+    mock_get_plan.return_value = mock_plan
+    mock_execute.return_value = {{
+        "items": [
+            {{
+                "{cfg['key_column']}": {cfg['sample_key']!r},
+            }}
+        ],
+        "page": {{
+            "cursor": None,
+            "has_more": False,
+        }},
+    }}
+
+    filters = FiltersEnvelope(
+        filters={{}}
+    )
+    sort = SortModel()
+    page = PaginationModel(
+        limit=10
+    )
+    columns = None
+
+    result = {repo}.{fn}(
+        {lookup_args}
+    )
+
+    assert isinstance(result, dict)
+    assert len(
+        result["items"]
+    ) == 1
+
+    args, _kwargs = (
+        mock_execute.call_args
+    )
+
+    sql_params = args[1]
+
+    if isinstance(
+        sql_params,
+        dict,
+    ):
+        assert any(
+            value == {cfg['sample_key']!r}
+            for value in sql_params.values()
         )
 
-    payload = {
-        field: sample_value(field, cfg)
-        for field in fields
-    }
 
-    allowed = cfg.get("response_assert_fields", [])
+@patch("db.repositories.{repo}.execute_query")
+@patch("db.repositories.{repo}._builder.get_list_plan")
+def test_{fn}_not_found(
+    mock_get_plan,
+    mock_execute,
+    mock_plan,
+):
+    mock_get_plan.return_value = mock_plan
+    mock_execute.return_value = {{
+        "items": [],
+        "page": {{
+            "cursor": None,
+            "has_more": False,
+        }},
+    }}
+
+    filters = FiltersEnvelope(
+        filters={{}}
+    )
+    sort = SortModel()
+    page = PaginationModel(
+        limit=10
+    )
+    columns = None
+
+    result = {repo}.{fn}(
+        {lookup_args}
+    )
+
+    assert isinstance(result, dict)
+    assert result["items"] == []
+"""
+
+
+def generate_db(
+    cfg: dict[str, Any],
+) -> str:
+    return f"""# AUTO-GENERATED by generate_api_tests.py
+# Manager Contract repository tests are the behavioral baseline.
+
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
+
+from db.repositories import {cfg['repo_module']}
+from v1.schemas import (
+    FiltersEnvelope,
+    PaginationModel,
+    SortModel,
+)
+
+
+@pytest.fixture
+def mock_plan():
+    plan = MagicMock()
+    plan.sql = (
+        "SELECT * "
+        "FROM generated_test_source"
+    )
+    plan.params = {{}}
+    return plan
+
+{generate_db_search_tests(cfg)}
+{generate_db_lookup_tests(cfg)}
+"""
+
+
+# =============================================================================
+# MODEL TEST GENERATION
+# =============================================================================
+
+
+def generate_model(
+    cfg: dict[str, Any],
+) -> str:
+    module = cfg["module_name"]
+    model = cfg["response_model"]
+
+    payload = complete_model_payload(
+        cfg
+    )
+
+    fields = set(
+        payload.keys()
+    )
+
+    allowed = cfg.get(
+        "response_assert_fields",
+        [],
+    )
+
     assertion_field = next(
-        (field for field in allowed if field in fields),
-        fields[0],
+        (
+            field
+            for field in allowed
+            if field in fields
+        ),
+        next(
+            iter(fields)
+        ),
     )
 
     return f"""# AUTO-GENERATED by generate_api_tests.py
@@ -469,8 +1202,15 @@ def test_{module}_response_valid_data():
 
     result = {model}(**data)
 
-    assert isinstance(result, {model})
-    assert getattr(result, "{assertion_field}") == {payload[assertion_field]!r}
+    assert isinstance(
+        result,
+        {model},
+    )
+
+    assert getattr(
+        result,
+        "{assertion_field}",
+    ) == {payload[assertion_field]!r}
 
 
 def test_{module}_response_empty_payload():
@@ -479,66 +1219,90 @@ def test_{module}_response_empty_payload():
     except ValidationError:
         return
 
-    assert isinstance(result, {model})
+    assert isinstance(
+        result,
+        {model},
+    )
 """
 
 
-def generate_service(cfg: dict[str, Any]) -> str:
+# =============================================================================
+# SERVICE TEST GENERATION
+# =============================================================================
+
+
+def generate_service_search_tests(
+    cfg: dict[str, Any],
+) -> str:
     module = cfg["module_name"]
-    service_module = cfg["service_module"]
-    repo_module = cfg["repo_module"]
-    service_fn = cfg["service_search_function"]
-    repo_fn = cfg["repo_search_function"]
-    model = cfg["response_model"]
+    service_module = cfg[
+        "service_module"
+    ]
+    repo_module = cfg[
+        "repo_module"
+    ]
+    service_fn = cfg[
+        "service_search_function"
+    ]
+    repo_fn = cfg[
+        "repo_search_function"
+    ]
+    model = cfg[
+        "response_model"
+    ]
 
     service_args = multiline_args(
-        search_call_args(
+        call_args(
             cfg,
-            cfg["service_search_parameters"],
+            cfg[
+                "service_search_parameters"
+            ],
         ),
         8,
     )
+
     repo_expected = multiline_args(
-        search_call_args(
+        call_args(
             cfg,
-            cfg["repo_search_parameters"],
+            cfg[
+                "repo_search_parameters"
+            ],
             use_any=True,
         ),
         8,
     )
 
-    sample = {
-        cfg["key_column"]: cfg["sample_key"],
-        cfg.get("sample_field", "name"): cfg.get(
-            "sample_value",
-            "Test Value",
-        ),
-    }
+    sample = complete_model_payload(
+        cfg
+    )
 
-    return f"""# AUTO-GENERATED by generate_api_tests.py
-# Manager Contract service tests are the behavioral baseline.
-
-from unittest.mock import ANY, patch
-
-from domain.models.{module} import {model}
-from domain.services.{service_module} import {service_fn}
-from v1.schemas import FiltersEnvelope, PaginationModel, SortModel
-
-
+    return f"""
 def test_{service_fn}_success():
     sample = {dict_literal(sample, 8)}
 
     with patch(
-        "domain.services.{service_module}.{repo_module}.{repo_fn}"
+        "domain.services."
+        "{service_module}."
+        "{repo_module}."
+        "{repo_fn}"
     ) as mock_repo:
         mock_repo.return_value = {{
-            "items": [sample],
-            "page": {{"cursor": None, "has_more": False}},
+            "items": [
+                sample
+            ],
+            "page": {{
+                "cursor": None,
+                "has_more": False,
+            }},
         }}
 
-        filters = FiltersEnvelope(filters={{}})
+        filters = FiltersEnvelope(
+            filters={{}}
+        )
         sort = SortModel()
-        page = PaginationModel(limit=10)
+        page = PaginationModel(
+            limit=10
+        )
         columns = None
 
         result = {service_fn}(
@@ -549,22 +1313,38 @@ def test_{service_fn}_success():
         {repo_expected}
         )
 
-        assert len(result.items) == 1
-        assert isinstance(result.items[0], {model})
+        assert len(
+            result.items
+        ) == 1
+
+        assert isinstance(
+            result.items[0],
+            {model},
+        )
 
 
 def test_{service_fn}_empty():
     with patch(
-        "domain.services.{service_module}.{repo_module}.{repo_fn}"
+        "domain.services."
+        "{service_module}."
+        "{repo_module}."
+        "{repo_fn}"
     ) as mock_repo:
         mock_repo.return_value = {{
             "items": [],
-            "page": {{"cursor": None, "has_more": False}},
+            "page": {{
+                "cursor": None,
+                "has_more": False,
+            }},
         }}
 
-        filters = FiltersEnvelope(filters={{}})
+        filters = FiltersEnvelope(
+            filters={{}}
+        )
         sort = SortModel()
-        page = PaginationModel(limit=10)
+        page = PaginationModel(
+            limit=10
+        )
         columns = None
 
         result = {service_fn}(
@@ -572,101 +1352,221 @@ def test_{service_fn}_empty():
         )
 
         assert result.items == []
-        assert result.metadata.has_more is False
+        assert (
+            result.metadata.has_more
+            is False
+        )
 """
 
 
-def generate_handler(cfg: dict[str, Any]) -> str:
+def generate_service_lookup_tests(
+    cfg: dict[str, Any],
+) -> str:
+    if not cfg.get(
+        "supports_key_lookup",
+        False,
+    ):
+        return ""
+
     module = cfg["module_name"]
-    handler_fn = cfg["handler_search_function"]
-    service_fn = cfg["service_search_function"]
+    service_module = cfg[
+        "service_module"
+    ]
+    repo_module = cfg[
+        "repo_module"
+    ]
+    service_fn = cfg[
+        "service_key_function"
+    ]
+    repo_fn = cfg[
+        "repo_key_function"
+    ]
+    model = cfg[
+        "response_model"
+    ]
 
-    inner_schema = cfg.get(
-        "handler_inner_schema",
-        f"V1{snake_to_pascal(module)}ResponseModel",
-    )
-    outer_schema = cfg.get(
-        "handler_outer_schema",
-        f"V1{snake_to_pascal(module)}ListResponseModel",
-    )
-
-    path_name = cfg.get("handler_path_parameter")
-    if cfg.get("search_requires_key") and path_name:
-        path_parameters = (
-            f'{{"{path_name}": {cfg["sample_key"]!r}}}'
-        )
-    else:
-        path_parameters = "{}"
-
-    expected = multiline_args(
-        search_call_args(
+    service_args = multiline_args(
+        call_args(
             cfg,
-            cfg["handler_service_parameters"],
-            use_any=True,
+            cfg.get(
+                "service_key_parameters",
+                [],
+            ),
+            force_key=True,
         ),
         8,
     )
 
-    missing_test = ""
-    if cfg.get("search_requires_key") and path_name:
-        missing_test = f"""
-
-def test_{handler_fn}_missing_id(mock_context):
-    event = {{
-        "pathParameters": {{}},
-        "requestContext": {{"requestId": "test-missing-id"}},
-    }}
-
-    response = {handler_fn}(event, mock_context)
-
-    assert response["statusCode"] == {cfg.get('handler_missing_key_status', 400)}
-
-    body = (
-        response["body"]
-        if isinstance(response["body"], dict)
-        else json.loads(response["body"])
+    repo_expected = multiline_args(
+        call_args(
+            cfg,
+            cfg.get(
+                "repo_key_parameters",
+                [],
+            ),
+            use_any=True,
+            force_key=True,
+        ),
+        8,
     )
-    assert body["error"]["message"] == {cfg.get('handler_missing_key_message', 'Required ID is missing.')!r}
+
+    sample = complete_model_payload(
+        cfg
+    )
+
+    return f"""
+def test_{service_fn}_success():
+    sample = {dict_literal(sample, 8)}
+
+    with patch(
+        "domain.services."
+        "{service_module}."
+        "{repo_module}."
+        "{repo_fn}"
+    ) as mock_repo:
+        mock_repo.return_value = {{
+            "items": [
+                sample
+            ],
+            "page": {{
+                "cursor": None,
+                "has_more": False,
+            }},
+        }}
+
+        filters = FiltersEnvelope(
+            filters={{}}
+        )
+        sort = SortModel()
+        page = PaginationModel(
+            limit=10
+        )
+        columns = None
+
+        result = {service_fn}(
+        {service_args}
+        )
+
+        assert len(
+            result.items
+        ) == 1
+
+        assert isinstance(
+            result.items[0],
+            {model},
+        )
+
+        assert mock_repo.called
+
+
+def test_{service_fn}_not_found():
+    with patch(
+        "domain.services."
+        "{service_module}."
+        "{repo_module}."
+        "{repo_fn}"
+    ) as mock_repo:
+        mock_repo.return_value = {{
+            "items": [],
+            "page": {{
+                "cursor": None,
+                "has_more": False,
+            }},
+        }}
+
+        filters = FiltersEnvelope(
+            filters={{}}
+        )
+        sort = SortModel()
+        page = PaginationModel(
+            limit=10
+        )
+        columns = None
+
+        result = {service_fn}(
+        {service_args}
+        )
+
+        assert result.items == []
 """
 
+
+def generate_service(
+    cfg: dict[str, Any],
+) -> str:
     return f"""# AUTO-GENERATED by generate_api_tests.py
-# Manager handler tests are the behavioral baseline.
+# Manager Contract service tests are the behavioral baseline.
 
-import json
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, patch
 
-from v1.handlers import {handler_fn}
+from domain.models.{cfg['module_name']} import (
+    {cfg['response_model']},
+)
+from domain.services.{cfg['service_module']} import (
+    {cfg['service_search_function']},
+{f"    {cfg['service_key_function']}," if cfg.get('supports_key_lookup') else ""}
+)
+from v1.schemas import (
+    FiltersEnvelope,
+    PaginationModel,
+    SortModel,
+)
+
+{generate_service_search_tests(cfg)}
+{generate_service_lookup_tests(cfg)}
+"""
 
 
-@patch("v1.handlers.{module}.{inner_schema}")
-@patch("v1.handlers.{module}.{outer_schema}")
-@patch("v1.handlers.{module}.{service_fn}")
-def test_{handler_fn}_success(
-    mock_service,
-    mock_outer_schema,
-    mock_inner_schema,
-    mock_context,
-):
-    request_id = "test-{module}-success"
+# =============================================================================
+# HANDLER TEST GENERATION
+# =============================================================================
 
-    mock_results = MagicMock()
+
+def handler_result_setup(
+    cfg: dict[str, Any],
+) -> str:
+    return f"""    mock_results = MagicMock()
+
     mock_results.items = [
         {{
             "{cfg['key_column']}": {cfg['sample_key']!r},
             "{cfg.get('sample_field', 'name')}": {cfg.get('sample_value', 'Test Value')!r},
         }}
     ]
+
     mock_results.metadata.cursor = None
     mock_results.metadata.has_more = False
     mock_results.metadata.applied_filters = {{}}
+
     mock_results.metadata.model_dump.return_value = {{
         "totalCount": 1,
         "cursor": None,
         "hasMore": False,
     }}
-    mock_service.return_value = mock_results
 
-    mock_inner_schema.model_validate.return_value = MagicMock()
+    mock_service.return_value = mock_results
+"""
+
+
+def handler_schema_setup(
+    cfg: dict[str, Any],
+    *,
+    detail: bool,
+) -> str:
+    outer_name = (
+        cfg.get(
+            "handler_detail_outer_schema"
+        )
+        if detail
+        else cfg.get(
+            "handler_outer_schema"
+        )
+    )
+
+    if not outer_name:
+        return ""
+
+    return f"""    mock_inner_schema.model_validate.return_value = MagicMock()
 
     outer = MagicMock()
     outer.model_dump.return_value = {{
@@ -675,25 +1575,391 @@ def test_{handler_fn}_success(
             "cursor": None,
             "hasMore": False,
         }},
-        "data": [{{"{cfg['key_column']}": {cfg['sample_key']!r}}}],
+        "data": [
+            {{
+                "{cfg['key_column']}": {cfg['sample_key']!r},
+            }}
+        ],
     }}
-    mock_outer_schema.return_value = outer
 
+    mock_outer_schema.return_value = outer
+"""
+
+
+def generate_handler_search_tests(
+    cfg: dict[str, Any],
+) -> str:
+    module = cfg["module_name"]
+    handler_fn = cfg[
+        "handler_search_function"
+    ]
+    service_fn = cfg[
+        "service_search_function"
+    ]
+
+    inner_schema = cfg.get(
+        "handler_inner_schema",
+        f"V1{snake_to_pascal(module)}ResponseModel",
+    )
+
+    outer_schema = cfg.get(
+        "handler_outer_schema",
+        f"V1{snake_to_pascal(module)}ListResponseModel",
+    )
+
+    expected = multiline_args(
+        call_args(
+            cfg,
+            cfg.get(
+                "handler_service_parameters",
+                [],
+            ),
+            use_any=True,
+        ),
+        8,
+    )
+
+    path_name = cfg.get(
+        "handler_path_parameter"
+    )
+
+    if (
+        cfg.get(
+            "search_requires_key",
+            False,
+        )
+        and path_name
+    ):
+        path_parameters = (
+            f'{{"{path_name}": '
+            f'{cfg["sample_key"]!r}}}'
+        )
+    else:
+        path_parameters = "{}"
+
+    missing_test = ""
+
+    if (
+        cfg.get(
+            "search_requires_key",
+            False,
+        )
+        and path_name
+    ):
+        missing_test = f"""
+def test_{handler_fn}_missing_id(
+    mock_context,
+):
+    event = {{
+        "pathParameters": {{}},
+        "requestContext": {{
+            "requestId": "test-missing-id",
+        }},
+    }}
+
+    response = {handler_fn}(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == {cfg.get('handler_missing_key_status', 400)}
+"""
+
+    return f"""
+@patch(
+    "v1.handlers.{module}."
+    "{inner_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{outer_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{service_fn}"
+)
+def test_{handler_fn}_success(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+    mock_context,
+):
+{handler_result_setup(cfg)}
+{handler_schema_setup(cfg, detail=False)}
     event = {{
         "pathParameters": {path_parameters},
         "queryStringParameters": None,
-        "requestContext": {{"requestId": request_id}},
+        "requestContext": {{
+            "requestId": "test-search-success",
+        }},
+        "body": "{{}}",
+        "isBase64Encoded": False,
     }}
 
-    response = {handler_fn}(event, mock_context)
+    response = {handler_fn}(
+        event,
+        mock_context,
+    )
 
     assert response["statusCode"] == {cfg.get('handler_success_status', 200)}
 
     mock_service.assert_called_once_with(
         {expected}
     )
+
 {missing_test}
 """
+
+
+def generate_handler_lookup_tests(
+    cfg: dict[str, Any],
+) -> str:
+    if not cfg.get(
+        "supports_handler_key_lookup",
+        False,
+    ):
+        return ""
+
+    module = cfg["module_name"]
+    handler_fn = cfg[
+        "handler_key_function"
+    ]
+    service_fn = cfg[
+        "service_key_function"
+    ]
+
+    inner_schema = cfg.get(
+        "handler_inner_schema",
+        f"V1{snake_to_pascal(module)}ResponseModel",
+    )
+
+    outer_schema = cfg.get(
+        "handler_detail_outer_schema",
+        cfg.get(
+            "handler_outer_schema",
+            f"V1{snake_to_pascal(module)}DetailResponseModel",
+        ),
+    )
+
+    path_name = cfg.get(
+        "handler_path_parameter",
+        cfg["key_argument"],
+    )
+
+    expected = multiline_args(
+        call_args(
+            cfg,
+            cfg.get(
+                "handler_key_service_parameters",
+                cfg.get(
+                    "service_key_parameters",
+                    [],
+                ),
+            ),
+            use_any=True,
+            force_key=True,
+        ),
+        8,
+    )
+
+    return f"""
+@patch(
+    "v1.handlers.{module}."
+    "{inner_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{outer_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{service_fn}"
+)
+def test_{handler_fn}_success(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+    mock_context,
+):
+{handler_result_setup(cfg)}
+{handler_schema_setup(cfg, detail=True)}
+    event = {{
+        "pathParameters": {{
+            "{path_name}": {cfg['sample_key']!r},
+        }},
+        "queryStringParameters": None,
+        "requestContext": {{
+            "requestId": "test-detail-success",
+        }},
+    }}
+
+    response = {handler_fn}(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == {cfg.get('handler_success_status', 200)}
+
+    mock_service.assert_called_once_with(
+        {expected}
+    )
+
+
+def test_{handler_fn}_missing_id(
+    mock_context,
+):
+    event = {{
+        "pathParameters": {{}},
+        "requestContext": {{
+            "requestId": "test-detail-missing",
+        }},
+    }}
+
+    response = {handler_fn}(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == {cfg.get('handler_missing_key_status', 400)}
+
+    body = (
+        response["body"]
+        if isinstance(
+            response["body"],
+            dict,
+        )
+        else json.loads(
+            response["body"]
+        )
+    )
+
+    assert body["error"]["message"] == {cfg.get('handler_missing_key_message', 'Required ID is missing.')!r}
+"""
+
+
+def generate_handler_list_tests(
+    cfg: dict[str, Any],
+) -> str:
+    if not cfg.get(
+        "supports_list",
+        False,
+    ):
+        return ""
+
+    module = cfg["module_name"]
+    handler_fn = cfg[
+        "handler_list_function"
+    ]
+    service_fn = cfg[
+        "service_search_function"
+    ]
+
+    inner_schema = cfg.get(
+        "handler_inner_schema",
+        f"V1{snake_to_pascal(module)}ResponseModel",
+    )
+
+    outer_schema = cfg.get(
+        "handler_outer_schema",
+        f"V1{snake_to_pascal(module)}ListResponseModel",
+    )
+
+    return f"""
+@patch(
+    "v1.handlers.{module}."
+    "{inner_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{outer_schema}"
+)
+@patch(
+    "v1.handlers.{module}."
+    "{service_fn}"
+)
+def test_{handler_fn}_success(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+    mock_context,
+):
+{handler_result_setup(cfg)}
+{handler_schema_setup(cfg, detail=False)}
+    event = {{
+        "queryStringParameters": {{
+            "limit": "10",
+        }},
+        "requestContext": {{
+            "requestId": "test-list-success",
+        }},
+    }}
+
+    response = {handler_fn}(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == {cfg.get('handler_success_status', 200)}
+    assert mock_service.called
+"""
+
+
+def generate_handler(
+    cfg: dict[str, Any],
+) -> str:
+    imports = [
+        cfg[
+            "handler_search_function"
+        ]
+    ]
+
+    if cfg.get(
+        "supports_handler_key_lookup",
+        False,
+    ):
+        imports.append(
+            cfg[
+                "handler_key_function"
+            ]
+        )
+
+    if cfg.get(
+        "supports_list",
+        False,
+    ):
+        imports.append(
+            cfg[
+                "handler_list_function"
+            ]
+        )
+
+    import_text = ",\n    ".join(
+        imports
+    )
+
+    return f"""# AUTO-GENERATED by generate_api_tests.py
+# Manager handler tests are the behavioral baseline.
+
+import json
+from unittest.mock import (
+    ANY,
+    MagicMock,
+    patch,
+)
+
+from v1.handlers import (
+    {import_text},
+)
+
+{generate_handler_search_tests(cfg)}
+{generate_handler_lookup_tests(cfg)}
+{generate_handler_list_tests(cfg)}
+"""
+
+
+# =============================================================================
+# GENERATION / EXECUTION
+# =============================================================================
 
 
 GENERATORS = {
@@ -711,8 +1977,45 @@ def validate_generated_python(
     try:
         ast.parse(source)
     except SyntaxError as exc:
+        lines = source.splitlines()
+
+        line_no = (
+            exc.lineno
+            or 0
+        )
+
+        start = max(
+            1,
+            line_no - 3,
+        )
+
+        end = min(
+            len(lines),
+            line_no + 3,
+        )
+
+        context = []
+
+        for number in range(
+            start,
+            end + 1,
+        ):
+            prefix = (
+                ">>"
+                if number == line_no
+                else "  "
+            )
+
+            context.append(
+                f"{prefix} "
+                f"{number:4}: "
+                f"{lines[number - 1]}"
+            )
+
         raise ValueError(
-            f"Generated Python is invalid for {destination}: {exc}"
+            f"Generated Python is invalid "
+            f"for {destination}: {exc}\n"
+            + "\n".join(context)
         ) from exc
 
 
@@ -723,29 +2026,56 @@ def generate_one(
     force: bool,
     dry_run: bool,
 ) -> Path | None:
-    destination = destination_file(test_type, cfg)
+    destination = destination_file(
+        test_type,
+        cfg,
+    )
 
-    if destination.exists() and not force and not dry_run:
-        print(f"SKIP   [{test_type:<7}] {destination}")
+    if (
+        destination.exists()
+        and not force
+        and not dry_run
+    ):
+        print(
+            f"SKIP   "
+            f"[{test_type:<7}] "
+            f"{destination}"
+        )
         return None
 
-    source = GENERATORS[test_type](cfg)
-    validate_generated_python(source, destination)
+    source = GENERATORS[
+        test_type
+    ](cfg)
+
+    validate_generated_python(
+        source,
+        destination,
+    )
 
     if dry_run:
-        print(f"DRY    [{test_type:<7}] {destination}")
+        print(
+            f"DRY    "
+            f"[{test_type:<7}] "
+            f"{destination}"
+        )
         return destination
 
     destination.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
+
     destination.write_text(
         source,
         encoding="utf-8",
     )
 
-    print(f"CREATE [{test_type:<7}] {destination}")
+    print(
+        f"CREATE "
+        f"[{test_type:<7}] "
+        f"{destination}"
+    )
+
     return destination
 
 
@@ -754,7 +2084,10 @@ def run_generated_tests(
     selected_types: list[str],
 ) -> int:
     paths = [
-        destination_file(test_type, cfg)
+        destination_file(
+            test_type,
+            cfg,
+        )
         for test_type in selected_types
     ]
 
@@ -762,19 +2095,25 @@ def run_generated_tests(
         sys.executable,
         "-m",
         "pytest",
-        *[str(path) for path in paths],
+        *[
+            str(path)
+            for path in paths
+        ],
         "-v",
     ]
 
     print()
     print("Running:")
-    print(" ".join(command))
+    print(
+        " ".join(command)
+    )
     print()
 
     completed = subprocess.run(
         command,
         cwd=Path.cwd(),
     )
+
     return completed.returncode
 
 
@@ -783,12 +2122,17 @@ def list_apis() -> None:
     print("Configured APIs")
     print("=" * 78)
 
-    for name in sorted(APIS):
+    for name in sorted(
+        APIS
+    ):
         cfg = APIS[name]
+
         print(
-            f"{name:<25} "
-            f"repo={cfg['repo_search_function']:<35} "
-            f"handler={cfg['handler_search_function']}"
+            f"{name:<30} "
+            f"repo="
+            f"{cfg['repo_search_function']:<38} "
+            f"handler="
+            f"{cfg['handler_search_function']}"
         )
 
     print()
@@ -805,8 +2149,14 @@ def generate_api(
     validate_config()
 
     if api_name not in APIS:
-        print(f"ERROR: API '{api_name}' is not configured.")
+        print(
+            f"ERROR: API "
+            f"'{api_name}' "
+            f"is not configured."
+        )
+
         list_apis()
+
         return 2
 
     cfg = validate_config_against_source(
@@ -815,12 +2165,38 @@ def generate_api(
 
     print()
     print("=" * 78)
-    print(f"Generating tests for API: {api_name}")
-    print(f"Repo search:    {cfg['repo_search_function']}")
-    print(f"Service search: {cfg['service_search_function']}")
-    print(f"Handler search: {cfg['handler_search_function']}")
-    print(f"Required key:   {cfg.get('search_requires_key', False)}")
-    print(f"Key lookup:     {cfg.get('supports_key_lookup', False)}")
+    print(
+        f"Generating tests for API: "
+        f"{api_name}"
+    )
+    print(
+        f"Repo search:    "
+        f"{cfg['repo_search_function']}"
+    )
+    print(
+        f"Service search: "
+        f"{cfg['service_search_function']}"
+    )
+    print(
+        f"Handler search: "
+        f"{cfg['handler_search_function']}"
+    )
+    print(
+        f"Required-key search: "
+        f"{cfg.get('search_requires_key', False)}"
+    )
+    print(
+        f"Key lookup: "
+        f"{cfg.get('supports_key_lookup', False)}"
+    )
+    print(
+        f"Handler key lookup: "
+        f"{cfg.get('supports_handler_key_lookup', False)}"
+    )
+    print(
+        f"List handler: "
+        f"{cfg.get('supports_list', False)}"
+    )
     print("=" * 78)
 
     selected_types = (
@@ -849,18 +2225,43 @@ def generate_api(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate API tests from manager-approved behavioral patterns."
+            "Generate API unit tests "
+            "from config and real source."
         )
     )
-    parser.add_argument("api", nargs="?")
-    parser.add_argument("--list", action="store_true")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--run", action="store_true")
+
+    parser.add_argument(
+        "api",
+        nargs="?",
+    )
+
+    parser.add_argument(
+        "--list",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--run",
+        action="store_true",
+    )
+
     parser.add_argument(
         "--test-type",
-        choices=list(TEST_TYPES),
+        choices=list(
+            TEST_TYPES
+        ),
     )
+
     return parser
 
 
