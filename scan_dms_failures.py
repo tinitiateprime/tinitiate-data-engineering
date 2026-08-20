@@ -1,18 +1,9 @@
-git status
-
-git add path\to\employee_profile_complete_repo.py
-git add path\to\employee_profile_complete_service.py
-git add path\to\employee_profile_complete.py
-git add path\to\employee_profile_complete_handler.py
-
-git add employee_profile_complete_config.json
-git add path\to\test_employee_profile_complete_repo.py
-git add path\to\test_employee_profile_complete_service.py
-git add path\to\test_employee_profile_complete.py
-git add path\to\test_employee_profile_complete_handler.py
-
-
-git diff --cached --name-only
-
-git commit -m "Add employee profile complete API"
-git push origin YOUR_BRANCH_NAME
+git add main-function/mt-dm-lambda-src/db/repositories/employee_profile_complete_repo.py
+git add main-function/mt-dm-lambda-src/domain/models/employee_profile_complete.py
+git add main-function/mt-dm-lambda-src/domain/services/employee_profile_complete_service.py
+git add main-function/mt-dm-lambda-src/v1/handler/employee_profile_complete.py
+git add main-function/mt-dm-lambda-src/v1/schemas/employee_profile_completes.py
+git add main-function/tests/unit/db/test_employee_profile_complete_repo.py
+git add main-function/tests/unit/domain/models/test_employee_profile_complete.py
+git add main-function/tests/unit/domain/services/test_employee_profile_complete_service.py
+git add main-function/tests/unit/v1/test_employee_profile_complete.py
