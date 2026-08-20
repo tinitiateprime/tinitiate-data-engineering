@@ -1,10 +1,16 @@
-git add tests/unit/db/test_gl_details_repo.py
-git add tests/unit/domain/models/test_gl_details.py
-git add tests/unit/domain/services/test_gl_details_service.py
-git add tests/unit/v1/test_gl_details.py
+cd C:\code\mt-dm-gsapdi-lambda-1\main-function
 
-git status
+py -m pytest tests\unit -v `
+  --cov=v1.handlers.financials_updated `
+  --cov=domain.services.financials_updated_service `
+  --cov=db.repositories.financials_updated_repo `
+  --cov-report=term-missing
 
-git commit -m "Add GL details unit tests and coverage"
 
-git push origin jay-api-coverage-fix
+py -m pytest tests\unit -v -k "financials_updated" `
+  --cov=v1.handlers.financials_updated `
+  --cov=domain.services.financials_updated_service `
+  --cov=db.repositories.financials_updated_repo `
+  --cov-report=term-missing
+
+
