@@ -209,3 +209,7 @@
         r"/v1/projects/status-detail/search"
     ),
 },
+
+Select-String -Path .\main-function\mt-dm-lambda-src\db\repositories\project_status_detail_repo.py -Pattern "^def "
+
+py generate_api_tests.py project_status_detail --force --run
