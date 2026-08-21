@@ -1947,6 +1947,194 @@ APIS = {
         "handler_list_route": "/v1/contracts/clm",
     },
 
+
+    # ========================================================
+    # CONTRACT ANALYSIS
+    # ========================================================
+    "contract_analysis": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "contract_analysis",
+        "repo_module": "contract_analysis_repo",
+        "service_module": "contract_analysis_service",
+        "handler_module": "contract_analysis",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_contract_analysis",
+        "repo_key_function": "get_contract_analysis_by_project_level",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_contract_analysis",
+        "service_key_function": "get_contract_analysis_by_project",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_contract_analysis_v1",
+        "handler_key_function": "get_contract_analysis_v1",
+        "handler_list_function": None,
+
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "ContractAnalysisResponse",
+        "search_response_model": "ContractAnalysisSearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key configuration
+        # ----------------------------------------------------
+        "key_column": "project_level",
+        "key_argument": "project_level",
+        "handler_path_parameter": "project_level",
+        "sample_key": "P-1001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "project_level",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "project_level",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "project_level",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor:
+        # f"{last_item.get('project_level')}_{last_item.get('fy_cd')}_{last_item.get('pd_no')}"
+        "repo_cursor_fields": [
+            "project_level",
+            "fy_cd",
+            "pd_no",
+        ],
+        "repo_cursor_values": [
+            "P-1001",
+            "2026",
+            1,
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "project_name",
+        "sample_value": "Test Project",
+        "sample_data": {
+            "project_level": "P-1001",
+            "reorg_level": "R-01",
+            "fy_cd": "2026",
+            "pd_no": 1,
+            "revenue": 1000.0,
+            "direct_labor_on": 100.0,
+            "direct_labor_off": 50.0,
+            "total_labor": 150.0,
+            "fringe_at_target": 10.0,
+            "cilof": 5.0,
+            "direct_travel": 25.0,
+            "materials": 50.0,
+            "odcs": 20.0,
+            "interco": 10.0,
+            "subs": 30.0,
+            "direct_subk_accruals": 15.0,
+            "direct_misc_accruals": 5.0,
+            "unbillable": 0.0,
+            "covid_19_cost": 0.0,
+            "burdens_at_target": 20.0,
+            "total_cost": 305.0,
+            "com": 100.0,
+            "fee": 50.0,
+            "project_name": "Test Project",
+            "project_type_desc": "Test Project Type",
+            "project_manager_name_validated": "Test Project Manager",
+            "customer_name": "Test Customer",
+            "enterprise": "Test Enterprise",
+        },
+
+        "response_key_field": "project_level",
+        "response_assert_fields": [
+            "project_level",
+            "fy_cd",
+            "pd_no",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1ContractAnalysisResponseModel",
+        "handler_outer_schema": "V1ContractAnalysisListResponseModel",
+        "handler_detail_outer_schema": "V1ContractAnalysisListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project level (proj_id) is required.",
+        "handler_detail_route": "/v1/contracts/analysis/{project_level}",
+        "handler_search_route": "/v1/contracts/analysis/search",
+    },
+
 }
 
 
