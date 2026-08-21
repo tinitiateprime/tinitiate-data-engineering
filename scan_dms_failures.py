@@ -110,168 +110,174 @@ APIS = {
     # PO FUNDING DETAIL
     # ========================================================
     "po_funding_detail": {
-    # ----------------------------------------------------
-    # Modules
-    # ----------------------------------------------------
-    "module_name": "po_funding_detail",
-    "repo_module": "po_funding_detail_repo",
-    "service_module": "po_funding_detail_service",
-    "handler_module": "po_funding_detail",
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "po_funding_detail",
+        "repo_module": "po_funding_detail_repo",
+        "service_module": "po_funding_detail_service",
+        "handler_module": "po_funding_detail",
 
-    # ----------------------------------------------------
-    # Repository
-    # ----------------------------------------------------
-    "repo_search_function": "get_po_funding_detail",
-    "repo_key_function": None,
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_po_funding_detail",
+        "repo_key_function": "get_po_funding_detail_by_project_id",
 
-    # ----------------------------------------------------
-    # Service
-    # ----------------------------------------------------
-    "service_search_function": "search_po_funding_detail",
-    "service_key_function": None,
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_po_funding_detail",
+        "service_key_function": "get_po_funding_detail_by_project",
 
-    # ----------------------------------------------------
-    # Handler
-    # ----------------------------------------------------
-    "handler_search_function": "search_po_funding_detail_v1",
-    "handler_key_function": None,
-    "handler_list_function": None,
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_po_funding_detail_v1",
+        "handler_key_function": "get_po_funding_detail_v1",
+        "handler_list_function": None,
 
-    # ----------------------------------------------------
-    # Domain models
-    # ----------------------------------------------------
-    "response_model": "PoFundingDetailResponse",
-    "search_response_model": "PoFundingDetailSearchServiceResponse",
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "PoFundingDetailResponse",
+        "search_response_model": "PoFundingDetailSearchServiceResponse",
 
-    # ----------------------------------------------------
-    # Key configuration
-    #
-    # QuerySpec logical_id_field = "proj_id"
-    # ----------------------------------------------------
-    "key_column": "proj_id",
-    "key_argument": "proj_id",
-    "handler_path_parameter": None,
-    "sample_key": "P-1001",
+        # ----------------------------------------------------
+        # Key configuration
+        # ----------------------------------------------------
+        "key_column": "project_id",
+        "key_argument": "project_id",
+        "handler_path_parameter": "project_id",
+        "sample_key": "P-1001",
 
-    # Search does NOT require proj_id
-    "search_requires_key": False,
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
 
-    # ----------------------------------------------------
-    # Supported operations
-    # ----------------------------------------------------
-    "supports_search": True,
-    "supports_list": False,
-    "supports_key_lookup": False,
-    "supports_handler_key_lookup": False,
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
 
-    # ----------------------------------------------------
-    # Repository function signature
-    #
-    # get_po_funding_detail(
-    #     filters,
-    #     sort,
-    #     page,
-    #     columns,
-    # )
-    # ----------------------------------------------------
-    "repo_search_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
 
-    # No repository key function
-    "repo_key_parameters": [],
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
 
-    # ----------------------------------------------------
-    # Service function signature
-    #
-    # search_po_funding_detail(
-    #     filters,
-    #     sort,
-    #     page,
-    #     columns,
-    # )
-    # ----------------------------------------------------
-    "service_search_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
 
-    # No service key function
-    "service_key_parameters": [],
+        # ----------------------------------------------------
+        # Repository execute_query / pagination
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
 
-    # ----------------------------------------------------
-    # Handler -> service parameters
-    #
-    # search_po_funding_detail_v1 calls:
-    # search_po_funding_detail(
-    #     filters=...,
-    #     sort=...,
-    #     page=...,
-    #     columns=...,
-    # )
-    # ----------------------------------------------------
-    "handler_service_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
+        # Keep the existing cursor expectations used by the
+        # generator until the repository cursor implementation
+        # is confirmed directly from po_funding_detail_repo.py.
+        "repo_cursor_fields": [
+            "po_id",
+            "po_line_id",
+        ],
+        "repo_cursor_values": [
+            "P-1001",
+            1,
+        ],
+        "repo_cursor_separator": "_",
 
-    "handler_key_service_parameters": [],
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "vendor_name",
+        "sample_value": "Test Vendor",
+        "sample_data": {
+            "po_id": "PO-1001",
+            "po_release_no": 1,
+            "po_line_no": 1,
+            "vendor_id": "VENDOR-001",
+            "vendor_name": "Test Vendor",
+            "order_date": "2026-01-15",
+            "po_line_desc": "Test PO Line",
+            "po_text": "Test PO Funding Detail",
+            "ordered_qty": 10.0,
+            "po_line_total_amt": 1000.0,
+            "vouchered_amt": 250.0,
+            "remaining": 750.0,
+            "project_id": "P-1001",
+            "min_po_line_total": 1000.0,
+            "min_vouchered_amt": 250.0,
+            "min_remaining": 750.0,
+        },
 
-    # ----------------------------------------------------
-    # Repository execute_query behavior
-    # ----------------------------------------------------
-    "repo_execute_query_passes_limit": True,
+        "response_key_field": "project_id",
+        "response_assert_fields": [
+            "project_id",
+            "po_id",
+            "po_line_no",
+        ],
 
-    # ----------------------------------------------------
-    # Pagination / cursor
-    #
-    # IMPORTANT:
-    # _format_paginated_response() builds the cursor from:
-    #
-    #     po_id
-    #     proj_id
-    #
-    # This MUST match the actual repository implementation.
-    # ----------------------------------------------------
-    "repo_cursor_fields": [
-        "po_id",
-        "po_line_id",
-    ],
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1PoFundingDetailResponseModel",
+        "handler_outer_schema": "V1PoFundingDetailListResponseModel",
+        "handler_detail_outer_schema": "V1PoFundingDetailListResponseModel",
 
-    "repo_cursor_values": [
-        "P-1001",
-         1,
-    ],
-
-    "repo_cursor_separator": "_",
-
-    # ----------------------------------------------------
-    # Pagination modes
-    # ----------------------------------------------------
-    "repo_pagination_mode": "page",
-    "service_search_pagination_mode": "page",
-    "service_key_pagination_mode": "page",
-
-    # ----------------------------------------------------
-    # Sample model data
-    # ----------------------------------------------------
-    "sample_field": "proj_name",
-    "sample_value": "Test Project",
-
-    # ----------------------------------------------------
-    # Response assertions
-    # ----------------------------------------------------
-    "response_key_field": "po_id",
-    "response_assert_fields": [
-        "po_id",
-    ],
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project ID is required.",
+        "handler_detail_route": "/v1/financials/po-funding/{project_id}",
+        "handler_search_route": "/v1/financials/po-funding/search",
     },
 
     # ========================================================
