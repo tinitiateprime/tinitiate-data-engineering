@@ -1523,6 +1523,219 @@ APIS = {
         "handler_search_route": "/v1/financials/period-target-cost-revenue/search",
     },
 
+
+    # ========================================================
+    # PO OPEN COMMITMENT
+    # ========================================================
+    "po_open_commitment": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "po_open_commitment",
+        "repo_module": "po_open_commitment_repo",
+        "service_module": "po_open_commitment_service",
+        "handler_module": "po_open_commitment",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_po_open_commitments",
+        "repo_key_function": "get_po_open_commitments_by_project_id",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_po_open_commitments",
+        "service_key_function": "get_po_open_commitments_by_project",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_po_open_commitments_v1",
+        "handler_key_function": "get_po_open_commitments_v1",
+        "handler_list_function": None,
+
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "PoOpenCommitmentResponse",
+        "search_response_model": "PoOpenCommitmentSearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key
+        #
+        # The QuerySpec logical_id_field is po_number, but the
+        # GET/detail API is keyed by project_id.
+        # ----------------------------------------------------
+        "key_column": "project_id",
+        "key_argument": "project_id",
+        "handler_path_parameter": "project_id",
+        "sample_key": "P-1001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "project_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor is built from:
+        # po_number + "_" + line_number
+        "repo_cursor_fields": [
+            "po_number",
+            "line_number",
+        ],
+        "repo_cursor_values": [
+            "PO-10001",
+            1,
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "project_name",
+        "sample_value": "Test Project",
+        "sample_data": {
+            "project_id": "P-1001",
+            "account_id": "ACCT-001",
+            "organization_id": "ORG-001",
+            "commitment_status_flag": "Y",
+            "account_name": "Test Account",
+            "day_difference": "10",
+            "prompt_on_or_off": "ON",
+            "prime_contract_id": "CONTRACT-001",
+            "requisition_id": "REQ-001",
+            "po_number": "PO-10001",
+            "release_number": 1,
+            "order_date": "2026-01-15",
+            "due_date": "2026-02-15",
+            "original_due_date": "2026-02-01",
+            "desired_date": "2026-02-10",
+            "requisitioner_employee_id": "EMP-001",
+            "requisitioner_name": "Test Requisitioner",
+            "c61": "C61-TEST",
+            "buyer_id": "BUYER-001",
+            "buyer_name": "Test Buyer",
+            "material_handler_employee_id": "EMP-002",
+            "material_handler_name": "Test Handler",
+            "vendor_name": "Test Vendor",
+            "vendor_terms": "NET30",
+            "header_performance_start_date": "2026-01-15",
+            "header_performance_end_date": "2026-12-31",
+            "procurement_type": "STANDARD",
+            "match_cd": "3WAY",
+            "line_number": 1,
+            "item_id": "ITEM-001",
+            "line_desc": "Test PO Line",
+            "vendor_part_id": "VP-001",
+            "performance_start_date": "2026-01-15",
+            "performance_end_date": "2026-12-31",
+            "deliver_to": "Test Location",
+            "gross_unit_cost": 100.0,
+            "order_quantity": 10.0,
+            "vouchered_qty": 2.0,
+            "total_out": 800.0,
+            "cost_percentage": 20.0,
+            "out_dollars": 800.0,
+            "po_line_ext_amt": 1000.0,
+            "sales_tax": 0.0,
+            "po_line_total_amt": 1000.0,
+            "vchr_po_amt_used": 200.0,
+            "open_commitments": 800.0,
+            "line_notes": "Test line notes",
+            "project_name": "Test Project",
+            "total_funded": 50000.0,
+            "project_start_date": "2026-01-01",
+            "project_end_date": "2026-12-31",
+            "access_type": "READ",
+        },
+
+        "response_key_field": "project_id",
+        "response_assert_fields": [
+            "project_id",
+            "po_number",
+            "line_number",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1PoOpenCommitmentResponseModel",
+        "handler_outer_schema": "V1PoOpenCommitmentListResponseModel",
+        "handler_detail_outer_schema": "V1PoOpenCommitmentListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project ID is required.",
+        "handler_detail_route": "/v1/financials/po-open-commitments/{project_id}",
+        "handler_search_route": "/v1/financials/po-open-commitments/search",
+    },
+
 }
 
 
