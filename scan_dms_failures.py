@@ -1307,6 +1307,222 @@ APIS = {
         "handler_search_route": "/v1/financials/non-labor/search",
     },
 
+
+    # ========================================================
+    # PERIOD TARGET COST REVENUE
+    # ========================================================
+    "period_target_cost_revenue": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "period_target_cost_revenue",
+        "repo_module": "period_target_cost_revenue_repo",
+        "service_module": "period_target_cost_revenue_service",
+        "handler_module": "period_target_cost_revenue",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_period_target_cost_revenue",
+        "repo_key_function": "get_period_target_cost_revenue_by_project_id",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_period_target_cost_revenue",
+        "service_key_function": "get_period_target_cost_revenue_by_project",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_period_target_cost_revenue_v1",
+        "handler_key_function": "get_period_target_cost_revenue_v1",
+        "handler_list_function": None,
+
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "PeriodTargetCostRevenueResponse",
+        "search_response_model": "PeriodTargetCostRevenueSearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key
+        # QuerySpec logical_id_field = "proj_id"
+        # ----------------------------------------------------
+        "key_column": "proj_id",
+        "key_argument": "proj_id",
+        "handler_path_parameter": "proj_id",
+        "sample_key": "P-1001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor:
+        # f"{last_item.get('PROJ_ID')}_{last_item.get('PD_NO')}"
+        "repo_cursor_fields": [
+            "PROJ_ID",
+            "PD_NO",
+        ],
+        "repo_cursor_values": [
+            "P-1001",
+            1,
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "proj_name",
+        "sample_value": "Test Project",
+        "sample_data": {
+            "PROJ_CLASS": "TEST",
+            "LVL1": "1",
+            "TGT/ACT": "TGT",
+            "PROJ_ID": "P-1001",
+            "proj_name": "Test Project",
+            "company_id": "COMP-001",
+            "PROJ_TYPE": "TEST",
+            "REV_FORMULA": "REV",
+            "BILL_FORMULA": "BILL",
+            "BILL_PROJECT_ID": "BP-1001",
+            "START_DT": "2026-01-01",
+            "END_DT": "2026-12-31",
+            "ACCT_ID": "ACCT-001",
+            "acct_name": "Test Account",
+            "ORG_ID": "ORG-001",
+            "REORG_ID": "REORG-001",
+            "L4_REORG_NAME": "Test Reorg",
+            "FRG_POOL": "FRG",
+            "OH_POOL": "OH",
+            "MH_POOL": "MH",
+            "GA_POOL": "GA",
+            "GA_MH_POOL": "GA_MH",
+            "LAB_NONLAB": "LAB",
+            "FY_CD": "2026",
+            "PD_NO": 1,
+            "HOURS": 10.0,
+            "LABOR_EXPENSE": 100.0,
+            "FR": 1.0,
+            "FR_RT": 0.1,
+            "OH": 2.0,
+            "OH_RT": 0.2,
+            "GA_LAB": 3.0,
+            "GA_RT": 0.3,
+            "LABOR_BURDEN": 10.0,
+            "LABOR_LOADED": 110.0,
+            "LABOR_PROFIT": 5.0,
+            "LABOR_REVENUE": 115.0,
+            "ODC_EXPENSE": 50.0,
+            "MH": 1.0,
+            "MH_RT": 0.1,
+            "GA_NONLAB": 2.0,
+            "GA_RT_NONLAB": 0.2,
+            "GA_MH_NONLAB": 3.0,
+            "GA_MH_RT_NONLAB": 0.3,
+            "ODC_BURDEN": 5.0,
+            "ODC_LOADED": 55.0,
+            "ODC_PROFIT": 2.5,
+            "ODC_REVENUE": 57.5,
+            "PD_TOTAL_COST": 165.0,
+            "AWARD_FEE_TGT_AMT": 10.0,
+            "FEEL_BURD_TGT_AMT": 1.0,
+            "FEE_ON_DIR_AMT": 5.0,
+            "FEE_ON_HRS_AMT": 2.0,
+            "MARKUP_FEE_AMT": 1.0,
+            "OTH_FEE_TGT_AMT": 1.0,
+            "OVER_TGT_FEE_AMT": 1.0,
+            "PD_TOTAL_PROFIT": 8.5,
+            "PD_TOTAL_REVENUE": 172.5,
+        },
+
+        "response_key_field": "proj_id",
+        "response_assert_fields": [
+            "proj_id",
+            "pd_no",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1PeriodTargetCostRevenueResponseModel",
+        "handler_outer_schema": "V1PeriodTargetCostRevenueListResponseModel",
+        "handler_detail_outer_schema": "V1PeriodTargetCostRevenueListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project ID is required.",
+        "handler_detail_route": "/v1/financials/period-target-cost-revenue/{proj_id}",
+        "handler_search_route": "/v1/financials/period-target-cost-revenue/search",
+    },
+
 }
 
 
