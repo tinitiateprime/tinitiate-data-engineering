@@ -1,167 +1,27 @@
-# ========================================================
-# PO FUNDING DETAIL
-# ========================================================
-"po_funding_detail": {
-    # ----------------------------------------------------
-    # Modules
-    # ----------------------------------------------------
-    "module_name": "po_funding_detail",
-    "repo_module": "po_funding_detail_repo",
-    "service_module": "po_funding_detail_service",
-    "handler_module": "po_funding_detail",
+cd C:\code\mt-dm-gsapdi-lambda-1\main-function
 
-    # ----------------------------------------------------
-    # Repository
-    # ----------------------------------------------------
-    "repo_search_function": "get_po_funding_detail",
-    "repo_key_function": None,
+git status
+git branch --show-current
 
-    # ----------------------------------------------------
-    # Service
-    # ----------------------------------------------------
-    "service_search_function": "search_po_funding_detail",
-    "service_key_function": None,
+git add tests/unit/db/test_financials_updated_repo.py
+git add tests/unit/domain/models/test_financials_updated.py
+git add tests/unit/domain/services/test_financials_updated_service.py
+git add tests/unit/v1/test_financials_updated.py
 
-    # ----------------------------------------------------
-    # Handler
-    # ----------------------------------------------------
-    "handler_search_function": "search_po_funding_detail_v1",
-    "handler_key_function": None,
-    "handler_list_function": None,
+git add tests/unit/db/test_gl_details_repo.py
+git add tests/unit/domain/models/test_gl_details.py
+git add tests/unit/domain/services/test_gl_details_service.py
+git add tests/unit/v1/test_gl_details.py
 
-    # ----------------------------------------------------
-    # Domain models
-    # ----------------------------------------------------
-    "response_model": "PoFundingDetailResponse",
-    "search_response_model": "PoFundingDetailSearchServiceResponse",
+git add tests/unit/db/test_po_funding_detail_repo.py
+git add tests/unit/domain/models/test_po_funding_detail.py
+git add tests/unit/domain/services/test_po_funding_detail_service.py
+git add tests/unit/v1/test_po_funding_detail.py
 
-    # ----------------------------------------------------
-    # Key configuration
-    #
-    # QuerySpec logical_id_field = "proj_id"
-    # ----------------------------------------------------
-    "key_column": "proj_id",
-    "key_argument": "proj_id",
-    "handler_path_parameter": None,
-    "sample_key": "P-1001",
+git status
+git diff --cached --stat
 
-    # Search does NOT require proj_id
-    "search_requires_key": False,
+git commit -m "Add generated unit tests for financials, GL details, and PO funding"
 
-    # ----------------------------------------------------
-    # Supported operations
-    # ----------------------------------------------------
-    "supports_search": True,
-    "supports_list": False,
-    "supports_key_lookup": False,
-    "supports_handler_key_lookup": False,
+git push origin jay-api-coverage-fix
 
-    # ----------------------------------------------------
-    # Repository function signature
-    #
-    # get_po_funding_detail(
-    #     filters,
-    #     sort,
-    #     page,
-    #     columns,
-    # )
-    # ----------------------------------------------------
-    "repo_search_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
-
-    # No repository key function
-    "repo_key_parameters": [],
-
-    # ----------------------------------------------------
-    # Service function signature
-    #
-    # search_po_funding_detail(
-    #     filters,
-    #     sort,
-    #     page,
-    #     columns,
-    # )
-    # ----------------------------------------------------
-    "service_search_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
-
-    # No service key function
-    "service_key_parameters": [],
-
-    # ----------------------------------------------------
-    # Handler -> service parameters
-    #
-    # search_po_funding_detail_v1 calls:
-    # search_po_funding_detail(
-    #     filters=...,
-    #     sort=...,
-    #     page=...,
-    #     columns=...,
-    # )
-    # ----------------------------------------------------
-    "handler_service_parameters": [
-        "filters",
-        "sort",
-        "page",
-        "columns",
-    ],
-
-    "handler_key_service_parameters": [],
-
-    # ----------------------------------------------------
-    # Repository execute_query behavior
-    # ----------------------------------------------------
-    "repo_execute_query_passes_limit": True,
-
-    # ----------------------------------------------------
-    # Pagination / cursor
-    #
-    # IMPORTANT:
-    # _format_paginated_response() builds the cursor from:
-    #
-    #     po_id
-    #     proj_id
-    #
-    # This MUST match the actual repository implementation.
-    # ----------------------------------------------------
-    "repo_cursor_fields": [
-        "po_id",
-        "proj_id",
-    ],
-
-    "repo_cursor_values": [
-        "test_po_id",
-        "P-1001",
-    ],
-
-    "repo_cursor_separator": "_",
-
-    # ----------------------------------------------------
-    # Pagination modes
-    # ----------------------------------------------------
-    "repo_pagination_mode": "page",
-    "service_search_pagination_mode": "page",
-    "service_key_pagination_mode": "page",
-
-    # ----------------------------------------------------
-    # Sample model data
-    # ----------------------------------------------------
-    "sample_field": "proj_name",
-    "sample_value": "Test Project",
-
-    # ----------------------------------------------------
-    # Response assertions
-    # ----------------------------------------------------
-    "response_key_field": "po_id",
-    "response_assert_fields": [
-        "po_id",
-    ],
-},
