@@ -751,3 +751,13 @@ def test_search_project_status_detail_handler_exists():
     assert callable(
         project_status_detail.search_project_status_detail_v1
     )
+
+
+py -m pytest .\main-function\tests\unit\v1\test_project_status_detail.py -v --cov=v1.handlers.project_status_detail --cov-report=term-missing    
+
+
+py -m pytest `
+.\main-function\tests\unit\db\test_project_status_detail_repo.py `
+.\main-function\tests\unit\domain\services\test_project_status_detail_service.py `
+.\main-function\tests\unit\v1\test_project_status_detail.py `
+-v
