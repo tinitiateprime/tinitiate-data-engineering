@@ -1,17 +1,18 @@
-from v1.handlers.po_funding_detail import (
-    get_po_funding_detail_v1,
-    search_po_funding_detail_v1,
+from v1.handlers.gl_details import (
+    get_gl_details_v1,
+    search_gl_details_v1,
 )
 
 
+
 # ============================================================
-# GET PO FUNDING DETAIL - MISSING PROJECT ID
+# GET GL DETAILS - MISSING PROJECT ID
 # ============================================================
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_path_param"
 )
-def test_get_po_funding_detail_v1_missing_project_id(
+def test_get_gl_details_v1_missing_project_id(
     mock_get_path_param,
     mock_context,
 ):
@@ -21,13 +22,13 @@ def test_get_po_funding_detail_v1_missing_project_id(
         "pathParameters": {},
         "queryStringParameters": None,
         "requestContext": {
-            "requestId": "test-missing-project-id",
+            "requestId": "test-missing-proj-id",
         },
         "body": None,
         "isBase64Encoded": False,
     }
 
-    response = get_po_funding_detail_v1(
+    response = get_gl_details_v1(
         event,
         mock_context,
     )
@@ -36,13 +37,13 @@ def test_get_po_funding_detail_v1_missing_project_id(
 
 
 # ============================================================
-# GET PO FUNDING DETAIL - PROJECT ID = SEARCH
+# GET GL DETAILS - PROJECT ID = SEARCH
 # ============================================================
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_path_param"
 )
-def test_get_po_funding_detail_v1_search_project_id(
+def test_get_gl_details_v1_search_project_id(
     mock_get_path_param,
     mock_context,
 ):
@@ -50,17 +51,17 @@ def test_get_po_funding_detail_v1_search_project_id(
 
     event = {
         "pathParameters": {
-            "project_id": "search",
+            "proj_id": "search",
         },
         "queryStringParameters": None,
         "requestContext": {
-            "requestId": "test-search-project-id",
+            "requestId": "test-search-proj-id",
         },
         "body": None,
         "isBase64Encoded": False,
     }
 
-    response = get_po_funding_detail_v1(
+    response = get_gl_details_v1(
         event,
         mock_context,
     )
@@ -69,25 +70,25 @@ def test_get_po_funding_detail_v1_search_project_id(
 
 
 # ============================================================
-# GET PO FUNDING DETAIL - NOT FOUND
+# GET GL DETAILS - NOT FOUND
 # ============================================================
 @patch(
-    "v1.handlers.po_funding_detail."
-    "get_po_funding_detail_by_project"
+    "v1.handlers.gl_details."
+    "get_gl_details_by_project"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_columns_query_parameter"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_all_query_params"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_path_param"
 )
-def test_get_po_funding_detail_v1_not_found(
+def test_get_gl_details_v1_not_found(
     mock_get_path_param,
     mock_get_query_params,
     mock_get_columns,
@@ -105,7 +106,7 @@ def test_get_po_funding_detail_v1_not_found(
 
     event = {
         "pathParameters": {
-            "project_id": "P-1001",
+            "proj_id": "P-1001",
         },
         "queryStringParameters": None,
         "requestContext": {
@@ -115,7 +116,7 @@ def test_get_po_funding_detail_v1_not_found(
         "isBase64Encoded": False,
     }
 
-    response = get_po_funding_detail_v1(
+    response = get_gl_details_v1(
         event,
         mock_context,
     )
@@ -123,7 +124,7 @@ def test_get_po_funding_detail_v1_not_found(
     assert response["statusCode"] == 404
 
     mock_service.assert_called_once_with(
-        project_id="P-1001",
+        proj_id="P-1001",
         page=ANY,
         sort=ANY,
         columns=None,
@@ -131,33 +132,33 @@ def test_get_po_funding_detail_v1_not_found(
 
 
 # ============================================================
-# GET PO FUNDING DETAIL - SUCCESS
+# GET GL DETAILS - SUCCESS
 # ============================================================
 @patch(
-    "v1.handlers.po_funding_detail."
-    "V1PoFundingDetailResponseModel"
+    "v1.handlers.gl_details."
+    "V1GlDetailsResponseModel"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
-    "V1PoFundingDetailListResponseModel"
+    "v1.handlers.gl_details."
+    "V1GlDetailsListResponseModel"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
-    "get_po_funding_detail_by_project"
+    "v1.handlers.gl_details."
+    "get_gl_details_by_project"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_columns_query_parameter"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_all_query_params"
 )
 @patch(
-    "v1.handlers.po_funding_detail."
+    "v1.handlers.gl_details."
     "LambdaUtils.get_path_param"
 )
-def test_get_po_funding_detail_v1_success(
+def test_get_gl_details_v1_success(
     mock_get_path_param,
     mock_get_query_params,
     mock_get_columns,
@@ -171,7 +172,7 @@ def test_get_po_funding_detail_v1_success(
     mock_get_query_params.return_value = {
         "limit": 10,
         "cursor": None,
-        "sortField": "order_date",
+        "sortField": "time_stamp",
         "sortOrder": "desc",
     }
 
@@ -179,14 +180,11 @@ def test_get_po_funding_detail_v1_success(
 
     mock_item = MagicMock()
     mock_item.model_dump.return_value = {
-        "project_id": "P-1001",
-        "order_date": "2026-08-20",
+        "proj_id": "P-1001",
     }
 
     mock_results = MagicMock()
-    mock_results.items = [
-        mock_item,
-    ]
+    mock_results.items = [mock_item]
 
     mock_results.metadata.model_dump.return_value = {
         "cursor": None,
@@ -209,7 +207,7 @@ def test_get_po_funding_detail_v1_success(
         },
         "data": [
             {
-                "projectId": "P-1001",
+                "projId": "P-1001",
             }
         ],
     }
@@ -218,11 +216,11 @@ def test_get_po_funding_detail_v1_success(
 
     event = {
         "pathParameters": {
-            "project_id": "P-1001",
+            "proj_id": "P-1001",
         },
         "queryStringParameters": {
             "limit": "10",
-            "sortField": "order_date",
+            "sortField": "time_stamp",
             "sortOrder": "desc",
         },
         "requestContext": {
@@ -232,7 +230,7 @@ def test_get_po_funding_detail_v1_success(
         "isBase64Encoded": False,
     }
 
-    response = get_po_funding_detail_v1(
+    response = get_gl_details_v1(
         event,
         mock_context,
     )
@@ -240,7 +238,7 @@ def test_get_po_funding_detail_v1_success(
     assert response["statusCode"] == 200
 
     mock_service.assert_called_once_with(
-        project_id="P-1001",
+        proj_id="P-1001",
         page=ANY,
         sort=ANY,
         columns=None,
@@ -248,20 +246,24 @@ def test_get_po_funding_detail_v1_success(
 
     service_call = mock_service.call_args
 
-    assert service_call.kwargs[
-        "page"
-    ].limit == 10
+    assert service_call.kwargs["page"].limit == 10
 
-    assert service_call.kwargs[
-        "sort"
-    ].field == "order_date"
+    assert (
+        service_call.kwargs["sort"].field
+        == "time_stamp"
+    )
 
-    assert service_call.kwargs[
-        "sort"
-    ].order == "desc"
+    assert (
+        service_call.kwargs["sort"].order
+        == "desc"
+    )
 
     mock_inner_schema.model_validate.assert_called_once_with(
         mock_item.model_dump.return_value
     )
 
     mock_outer_schema.assert_called_once()
+
+
+
+py -m pytest tests\unit\v1\test_gl_details.py -v --cov=v1.handlers.gl_details --cov-report=term-missing
