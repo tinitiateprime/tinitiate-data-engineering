@@ -158,3 +158,13 @@ class ProjectStatusReportSearchServiceResponse(BaseModel):
 
     items: List[ProjectStatusReportResponse]
     metadata: MetadataModel
+
+
+from domain.models.project_status_report import (
+    ProjectStatusReportResponse,
+    ProjectStatusReportSearchServiceResponse,
+)
+
+
+ProjectStatusReportResponse
+ProjectStatusReportSearchServiceResponse
