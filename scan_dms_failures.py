@@ -2135,6 +2135,173 @@ APIS = {
         "handler_search_route": "/v1/contracts/analysis/search",
     },
 
+
+    # ========================================================
+    # AR HISTORY
+    # ========================================================
+    "ar_history": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "ar_history",
+        "repo_module": "ar_history_repo",
+        "service_module": "ar_history_service",
+        "handler_module": "ar_history",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_ar_history",
+        "repo_key_function": "get_ar_history_by_project_id",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_ar_history",
+        "service_key_function": "get_ar_history_by_project",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_ar_history_v1",
+        "handler_key_function": "get_ar_history_v1",
+        "handler_list_function": None,
+
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "ArHistoryResponse",
+        "search_response_model": "ArHistorySearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key configuration
+        # ----------------------------------------------------
+        "key_column": "proj_id",
+        "key_argument": "proj_id",
+        "handler_path_parameter": "proj_id",
+        "sample_key": "P-1001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor:
+        # f"{last_item.get('PROJ_ID')}_{last_item.get('INVC_ID')}"
+        "repo_cursor_fields": [
+            "PROJ_ID",
+            "INVC_ID",
+        ],
+        "repo_cursor_values": [
+            "P-1001",
+            "INV-001",
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "invc_id",
+        "sample_value": "INV-001",
+        "sample_data": {
+            "rcv_acct_id": "RCV-001",
+            "proj_id": "P-1001",
+            "invc_id": "INV-001",
+            "bill_no_id": "BILL-001",
+            "invc_dt": "2026-01-15",
+            "company_id": "COMP-001",
+            "invoice_amount": 1000.0,
+            "receipt_amount": 250.0,
+            "amount_due": 750.0,
+            "last_recpt_dt": "2026-01-20",
+        },
+
+        "response_key_field": "proj_id",
+        "response_assert_fields": [
+            "proj_id",
+            "invc_id",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1ArHistoryResponseModel",
+        "handler_outer_schema": "V1ArHistoryListResponseModel",
+        "handler_detail_outer_schema": "V1ArHistoryListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project ID is required.",
+        "handler_detail_route": "/v1/financials/ar-history/{proj_id}",
+        "handler_search_route": "/v1/financials/ar-history/search",
+    },
+
 }
 
 
