@@ -2315,8 +2315,7 @@ APIS = {
         "service_module": "project_status_report_service",
         "handler_module": "project_status_report",
 
-        # There is NO separate domain/models/project_status_report.py.
-        # This API intentionally reuses the existing project_status models.
+        # Standalone model for project_status_report.
         "model_module": "project_status_report",
 
         # Handler schemas are imported from v1.schemas.project.
@@ -2344,12 +2343,12 @@ APIS = {
         # ----------------------------------------------------
         # Domain models
         #
-        # Reused from domain.models.project_status
+        # Standalone project_status_report domain models
         # ----------------------------------------------------
         "response_model": "ProjectStatusReportResponse",
         "search_response_model": "ProjectStatusReportSearchServiceResponse",
 
-        # No dedicated project_status_report model file/test.
+        # Dedicated project_status_report model file/test.
         "supports_model_test": True,
 
         # ----------------------------------------------------
@@ -2436,6 +2435,9 @@ APIS = {
         ],
         "repo_cursor_separator": "_",
 
+        "default_sort_field": "fiscal_year",
+        "default_sort_order": "desc",
+
         # ----------------------------------------------------
         # Sample model data
         #
@@ -2446,6 +2448,9 @@ APIS = {
         "sample_field": "proj_id",
         "sample_value": "P-1001",
         "sample_data": {
+            "proj_id": "P-1001",
+        },
+        "key_sample_data": {
             "proj_id": "P-1001",
         },
 
@@ -2474,6 +2479,11 @@ APIS = {
 
         # Used by the GET/list-style query filter parser in the handler.
         "handler_filter_context": "PROJECT_STATUS_REPORT_FILTER_CONTEXT",
+
+        "generate_repo_tests": True,
+        "generate_model_tests": True,
+        "generate_service_tests": True,
+        "generate_handler_tests": True,
     },
 
 }
