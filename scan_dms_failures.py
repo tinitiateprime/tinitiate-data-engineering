@@ -2449,9 +2449,11 @@ APIS = {
         "sample_value": "P-1001",
         "sample_data": {
             "proj_id": "P-1001",
+            "lvl_no": 1,
         },
         "key_sample_data": {
             "proj_id": "P-1001",
+            "lvl_no": 1,
         },
 
         "response_key_field": "proj_id",
