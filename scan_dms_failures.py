@@ -1742,6 +1742,211 @@ APIS = {
         "handler_search_route": "/v1/financials/po-open-commitments/search",
     },
 
+
+    # ========================================================
+    # CLM TCV
+    # ========================================================
+    "clm_tcv": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "clm_tcv",
+        "repo_module": "clm_tcv_repo",
+        "service_module": "clm_tcv_service",
+        "handler_module": "clm_tcv",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "get_clm_contracts",
+        "repo_key_function": "get_clm_contract_by_id",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_clm_contracts",
+        "service_key_function": "get_clm_contract_details",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_clm_contracts_v1",
+        "handler_key_function": "get_clm_contract_v1",
+        "handler_list_function": "list_clm_contracts_v1",
+
+        # ----------------------------------------------------
+        # Domain models
+        # ----------------------------------------------------
+        "response_model": "ClmTcvResponse",
+        "search_response_model": "ClmTcvSearchServiceResponse",
+
+        # ----------------------------------------------------
+        # Key configuration
+        # ----------------------------------------------------
+        "key_column": "contract_id",
+        "key_argument": "contract_id",
+        "handler_path_parameter": "contract_id",
+        "sample_key": "CONTRACT-001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": True,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "contract_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "contract_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "contract_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+        "handler_list_service_parameters": [
+            "filters",
+            "page",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor:
+        # f"{last_item.get('contract_id')}_{last_item.get('mod_no')}"
+        "repo_cursor_fields": [
+            "contract_id",
+            "mod_no",
+        ],
+        "repo_cursor_values": [
+            "CONTRACT-001",
+            "0001",
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        # ----------------------------------------------------
+        "sample_field": "title",
+        "sample_value": "Test CLM Contract",
+        "sample_data": {
+            "award_no": "AWARD-001",
+            "order_no": "ORDER-001",
+            "mod_no": "0001",
+            "award_type": "TEST",
+            "num_awardees": "1",
+            "own_org_code": "ORG-001",
+            "own_org_desc": "Test Organization",
+            "title": "Test CLM Contract",
+            "neg_total_value": 1000.0,
+            "neg_chg_value": 100.0,
+            "exer_total_value": 900.0,
+            "exer_chg_value": 50.0,
+            "fund_total_value": 800.0,
+            "fund_chg_value": 25.0,
+            "proj_id": "P-1001",
+            "contract_id": "CONTRACT-001",
+            "order_id": "ORDER-ID-001",
+            "contractor_role": "Prime",
+            "contract_type": "TEST",
+            "cust_name": "Test Customer",
+            "leg_ent_code": "LE-001",
+            "leg_ent_name": "Test Legal Entity",
+            "prop_no": "PROP-001",
+            "mod_reason": "Test Modification",
+            "con_admin_name": "Test Contract Admin",
+            "prog_mgr_name": "Test Program Manager",
+            "contract_max_value": 1000.0,
+            "iwo": "N",
+            "award_status": "ACTIVE",
+            "con_status": "ACTIVE",
+            "opp_id": "OPP-001",
+            "subcon_admin_name": "Test Subcontract Admin",
+            "active_flag": "Y",
+            "perf_org_code": "PERF-001",
+            "perf_org_desc": "Test Performing Org",
+            "con_cust": "Test Contract Customer",
+            "proj_mgr_name": "Test Project Manager",
+            "sow": "Test SOW",
+            "fund_cust_1": "FC1",
+            "fund_cust_2": "FC2",
+            "cor_name": "Test COR",
+            "co_name": "Test CO",
+            "px_level": "1",
+        },
+
+        "response_key_field": "contract_id",
+        "response_assert_fields": [
+            "contract_id",
+            "mod_no",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1ClmTcvResponseModel",
+        "handler_outer_schema": "V1ClmTcvListResponseModel",
+        "handler_detail_outer_schema": "V1ClmTcvListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Contract ID is required.",
+        "handler_detail_route": "/v1/contracts/clm/{contract_id}",
+        "handler_search_route": "/v1/contracts/clm/search",
+        "handler_list_route": "/v1/contracts/clm",
+    },
+
 }
 
 
