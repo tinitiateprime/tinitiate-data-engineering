@@ -2302,6 +2302,180 @@ APIS = {
         "handler_search_route": "/v1/financials/ar-history/search",
     },
 
+
+    # ========================================================
+    # PROJECT STATUS REPORT
+    # ========================================================
+    "project_status_report": {
+        # ----------------------------------------------------
+        # Modules
+        # ----------------------------------------------------
+        "module_name": "project_status_report",
+        "repo_module": "project_status_report_repo",
+        "service_module": "project_status_report_service",
+        "handler_module": "project_status_report",
+
+        # There is NO separate domain/models/project_status_report.py.
+        # This API intentionally reuses the existing project_status models.
+        "model_module": "project_status",
+
+        # Handler schemas are imported from v1.schemas.project.
+        "handler_schema_module": "project",
+
+        # ----------------------------------------------------
+        # Repository
+        # ----------------------------------------------------
+        "repo_search_function": "search_project_status_report",
+        "repo_key_function": "get_project_status_report_history",
+
+        # ----------------------------------------------------
+        # Service
+        # ----------------------------------------------------
+        "service_search_function": "search_project_status_report",
+        "service_key_function": "get_project_status_report_history",
+
+        # ----------------------------------------------------
+        # Handler
+        # ----------------------------------------------------
+        "handler_search_function": "search_project_status_history_v1",
+        "handler_key_function": "get_project_status_history_v1",
+        "handler_list_function": None,
+
+        # ----------------------------------------------------
+        # Domain models
+        #
+        # Reused from domain.models.project_status
+        # ----------------------------------------------------
+        "response_model": "ProjectStatusResponse",
+        "search_response_model": "ProjectStatusSearchServiceResponse",
+
+        # No dedicated project_status_report model file/test.
+        "supports_model_test": False,
+
+        # ----------------------------------------------------
+        # Key configuration
+        # ----------------------------------------------------
+        "key_column": "proj_id",
+        "key_argument": "proj_id",
+        "handler_path_parameter": "proj_id",
+        "sample_key": "P-1001",
+
+        "search_requires_key": False,
+        "key_lookup_requires_key": True,
+
+        # ----------------------------------------------------
+        # Supported operations
+        # ----------------------------------------------------
+        "supports_search": True,
+        "supports_list": False,
+        "supports_key_lookup": True,
+        "supports_handler_key_lookup": True,
+
+        # ----------------------------------------------------
+        # Repository function signatures
+        # ----------------------------------------------------
+        "repo_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "repo_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Service function signatures
+        # ----------------------------------------------------
+        "service_search_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "service_key_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Handler -> service signatures
+        # ----------------------------------------------------
+        "handler_service_parameters": [
+            "filters",
+            "sort",
+            "page",
+            "columns",
+        ],
+        "handler_key_service_parameters": [
+            "proj_id",
+            "page",
+            "sort",
+            "columns",
+        ],
+
+        # ----------------------------------------------------
+        # Pagination / DB execution
+        # ----------------------------------------------------
+        "repo_execute_query_passes_limit": True,
+        "repo_pagination_mode": "page",
+        "service_search_pagination_mode": "page",
+        "service_key_pagination_mode": "page",
+
+        # Repository cursor is generated from proj_id.
+        "repo_cursor_fields": [
+            "proj_id",
+        ],
+        "repo_cursor_values": [
+            "P-1001",
+        ],
+        "repo_cursor_separator": "_",
+
+        # ----------------------------------------------------
+        # Sample model data
+        #
+        # The API reuses ProjectStatusResponse. Keep the
+        # sample minimal so it does not invent fields that
+        # were not shown in the project_status_report files.
+        # ----------------------------------------------------
+        "sample_field": "proj_id",
+        "sample_value": "P-1001",
+        "sample_data": {
+            "proj_id": "P-1001",
+        },
+
+        "response_key_field": "proj_id",
+        "response_assert_fields": [
+            "proj_id",
+        ],
+
+        # ----------------------------------------------------
+        # V1 handler schemas
+        # ----------------------------------------------------
+        "handler_inner_schema": "V1ProjectStatusReportResponseModel",
+        "handler_outer_schema": "V1ProjectStatusReportListResponseModel",
+        "handler_detail_outer_schema": "V1ProjectStatusReportListResponseModel",
+
+        # ----------------------------------------------------
+        # Handler expectations / routes
+        # ----------------------------------------------------
+        "handler_success_status": 200,
+        "handler_missing_key_status": 400,
+        "handler_not_found_status": 404,
+        "handler_missing_key_message": "Project ID is required.",
+
+        "handler_detail_route": "/v1/projects/project-status-history/{proj_id}",
+        "handler_search_route": "/v1/projects/project-status-history/search",
+
+        # Used by the GET/list-style query filter parser in the handler.
+        "handler_filter_context": "PROJECT_STATUS_REPORT_FILTER_CONTEXT",
+    },
+
 }
 
 
