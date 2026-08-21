@@ -10,6 +10,11 @@
     "columns",
 ],
 
+"handler_service_parameters": [
+    "proj_id",
+    "columns",
+],
+
 "handler_search_uses_filters": True,
 "handler_search_uses_sort": True,
 "handler_search_uses_page": True,
