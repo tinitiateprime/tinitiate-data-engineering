@@ -1,41 +1,19 @@
 """
-Unit tests for db.repositories.employee_profile_repo
-
-Covers:
-- generic employee profile search
-- dict filters
-- explicit sort/page/columns
-- pagination / cursor generation
-- employee lookup by ID
-- manager lookup
-- organization lookup
-- clearance lookup
-- personnel roster
-- invalid/blank identifier branches
-- empty DB results
-
-Target coverage: 90%+
+Unit tests for domain.services.employee_profile_service.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from db.repositories import employee_profile_repo
-from v1.schemas import FiltersEnvelope, PaginationModel, SortModel
+from core.filters import FiltersEnvelope, SortModel
+from core.pagination import PaginationModel
+from domain.services import employee_profile_service
 
 
 # ============================================================================
-# Helpers
+# Sample data
 # ============================================================================
-
-
-@pytest.fixture
-def mock_plan():
-    plan = MagicMock()
-    plan.sql = "SELECT * FROM gold.employee_profile_vw"
-    plan.params = {}
-    return plan
 
 
 def _employee(
@@ -43,190 +21,161 @@ def _employee(
     first_name="John",
     last_name="Doe",
 ):
+    """
+    Valid EmployeeProfileResponse payload.
+
+    Aliases are used because EmployeeProfileResponse is configured with
+    populate_by_name=True.
+    """
     return {
-        "EMPL_ID": employee_id,
-        "FIRST_NAME": first_name,
-        "LAST_NAME": last_name,
-        "LAST_FIRST_NAME": f"{last_name}, {first_name}",
-        "TITLE_DESC": "Engineer",
-        "JOB_CODE": "ENG1",
-        "S_EMPL_TYPE_CD": "EMP",
-        "ORG_ID": "ORG-001",
-        "DEPT_NAME": "Engineering",
-        "LOC_NAME": "Dallas",
-        "LOC_CITY": "Dallas",
-        "MGR_NAME": "Manager One",
-        "MGR_EMPL_ID": "M-100",
-        "HIRE_DATE": "2020-01-01",
-        "clearance_status": "Active",
-        "clearance_status_date": "2025-01-01",
-        "clearance_eligibility": "Eligible",
+        "employeeId": employee_id,
+        "firstName": first_name,
+        "lastName": last_name,
+        "lastFirstName": f"{last_name}, {first_name}",
+        "titleDescription": "Software Engineer",
+        "jobCode": "ENG-01",
+        "employmentType": "EMP",
+        "organizationId": "ORG-001",
+        "departmentName": "Engineering",
+        "locationName": "Dallas",
+        "locationCity": "Dallas",
+        "managerName": "Jane Manager",
+        "managerEmployeeId": "M-100",
+        "hireDate": "2020-01-01",
+        "clearanceStatus": "Active",
+        "clearanceStatusDate": "2025-01-01",
+        "clearanceEligibility": "Eligible",
     }
 
 
-# ============================================================================
-# _format_paginated_response
-# ============================================================================
-
-
-def test_format_paginated_response_no_more():
-    items = [
-        {
-            "EMPL_ID": "E-1001",
-            "FIRST_NAME": "John",
-            "total_count_hidden": 1,
-        }
-    ]
-
-    result = employee_profile_repo._format_paginated_response(
-        items=items,
-        limit=10,
-    )
-
-    assert len(result["items"]) == 1
-    assert result["page"]["has_more"] is False
-    assert result["page"]["cursor"] is None
-
-    # helper removes hidden count
-    assert "total_count_hidden" not in result["items"][0]
-
-
-@patch("db.repositories.employee_profile_repo.encode_cursor")
-def test_format_paginated_response_has_more(mock_encode_cursor):
-    mock_encode_cursor.return_value = "encoded-next-cursor"
-
-    items = [
-        {"EMPL_ID": f"E-{i}", "total_count_hidden": 11}
-        for i in range(11)
-    ]
-
-    result = employee_profile_repo._format_paginated_response(
-        items=items,
-        limit=10,
-    )
-
-    assert len(result["items"]) == 10
-    assert result["page"]["has_more"] is True
-    assert result["page"]["cursor"] == "encoded-next-cursor"
-
-    mock_encode_cursor.assert_called_once_with("E-9")
-
-    for item in result["items"]:
-        assert "total_count_hidden" not in item
-
-
-def test_format_paginated_response_empty():
-    result = employee_profile_repo._format_paginated_response(
-        items=[],
-        limit=10,
-    )
-
-    assert result == {
-        "items": [],
+def _repo_result(
+    items=None,
+    cursor=None,
+    has_more=False,
+):
+    return {
+        "items": items if items is not None else [],
         "page": {
-            "cursor": None,
-            "has_more": False,
+            "cursor": cursor,
+            "has_more": has_more,
         },
     }
 
 
 # ============================================================================
-# get_employee_profiles
+# _empty_response
 # ============================================================================
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_basic(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+def test_empty_response():
+    result = employee_profile_service._empty_response()
 
-    result = employee_profile_repo.get_employee_profiles()
-
-    assert len(result["items"]) == 1
-    assert result["items"][0]["EMPL_ID"] == "E-1001"
-    assert result["page"]["has_more"] is False
-
-    mock_get_list_plan.assert_called_once()
-    mock_execute_query.assert_called_once()
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+    assert result.metadata.applied_filters is None
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_with_dict_filter(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+# ============================================================================
+# get_all_employees
+# ============================================================================
 
-    result = employee_profile_repo.get_employee_profiles(
-        filters={
-            "organizationId": {
-                "eq": "ORG-001"
-            }
-        }
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
     )
 
-    assert len(result["items"]) == 1
-    assert result["items"][0]["ORG_ID"] == "ORG-001"
+    result = employee_profile_service.get_all_employees()
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert isinstance(args["filters"], FiltersEnvelope)
+    assert len(result.items) == 1
+    assert result.items[0].employee_id == "E-1001"
+
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+    mock_repo.assert_called_once()
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_with_filter_envelope(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_empty(mock_repo):
+    mock_repo.return_value = _repo_result(items=[])
+
+    result = employee_profile_service.get_all_employees()
+
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_with_dict_filters(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
+    )
+
+    result = employee_profile_service.get_all_employees(
+        filters={}
+    )
+
+    assert len(result.items) == 1
+
+    kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_with_filters_envelope(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
+    )
 
     filters = FiltersEnvelope(filters={})
 
-    result = employee_profile_repo.get_employee_profiles(
+    result = employee_profile_service.get_all_employees(
         filters=filters
     )
 
-    assert len(result["items"]) == 1
+    assert len(result.items) == 1
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert args["filters"] is filters
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["filters"] is filters
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_with_sort_page_columns(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_custom_page_sort_columns(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor="NEXT-CURSOR",
+        has_more=True,
+    )
+
+    page = PaginationModel(limit=5)
 
     sort = SortModel(
         field="firstName",
         order="desc",
-    )
-
-    page = PaginationModel(
-        limit=5,
     )
 
     columns = [
@@ -235,322 +184,364 @@ def test_get_employee_profiles_with_sort_page_columns(
         "lastName",
     ]
 
-    result = employee_profile_repo.get_employee_profiles(
+    result = employee_profile_service.get_all_employees(
         filters=None,
         sort=sort,
         page=page,
         columns=columns,
     )
 
-    assert len(result["items"]) == 1
+    assert len(result.items) == 1
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert result.metadata.cursor == "NEXT-CURSOR"
+    assert result.metadata.has_more is True
 
-    assert args["sort"] is sort
-    assert args["page"] is page
-    assert args["columns"] == columns
+    kwargs = mock_repo.call_args.kwargs
 
-    mock_execute_query.assert_called_once_with(
-        mock_plan.sql,
-        mock_plan.params,
-        limit=5,
+    assert kwargs["sort"] is sort
+    assert kwargs["page"] is page
+    assert kwargs["columns"] == columns
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_default_page_and_sort(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
     )
 
+    employee_profile_service.get_all_employees()
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_empty_result(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": []
-    }
+    kwargs = mock_repo.call_args.kwargs
 
-    result = employee_profile_repo.get_employee_profiles()
+    assert isinstance(
+        kwargs["page"],
+        PaginationModel,
+    )
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
+    assert isinstance(
+        kwargs["sort"],
+        SortModel,
+    )
+
+    assert kwargs["sort"].field == "lastName"
+    assert kwargs["sort"].order == "asc"
 
 
-@patch("db.repositories.employee_profile_repo.encode_cursor")
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profiles_has_more(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_encode_cursor,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_encode_cursor.return_value = "NEXT"
-
-    # Request limit 2 but DB returns 3.
-    page = PaginationModel(limit=2)
-
-    mock_execute_query.return_value = {
-        "items": [
-            _employee("E-1"),
-            _employee("E-2"),
-            _employee("E-3"),
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profiles"
+)
+def test_get_all_employees_multiple_items(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[
+            _employee("E-1001", "John", "Doe"),
+            _employee("E-1002", "Jane", "Smith"),
         ]
-    }
-
-    result = employee_profile_repo.get_employee_profiles(
-        page=page
     )
 
-    assert len(result["items"]) == 2
-    assert result["page"]["has_more"] is True
-    assert result["page"]["cursor"] == "NEXT"
+    result = employee_profile_service.get_all_employees()
+
+    assert len(result.items) == 2
+
+    assert result.items[0].employee_id == "E-1001"
+    assert result.items[1].employee_id == "E-1002"
 
 
 # ============================================================================
-# get_employee_profile_by_id
+# get_employee_by_id
 # ============================================================================
 
 
-def test_get_employee_profile_by_id_empty_string():
-    result = employee_profile_repo.get_employee_profile_by_id("")
+def test_get_employee_by_id_empty_id():
+    result = employee_profile_service.get_employee_by_id("")
 
-    assert result == {
-        "items": [],
-        "page": {
-            "cursor": None,
-            "has_more": False,
-        },
-    }
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
 
-def test_get_employee_profile_by_id_whitespace():
-    result = employee_profile_repo.get_employee_profile_by_id("   ")
+def test_get_employee_by_id_none_id():
+    result = employee_profile_service.get_employee_by_id(None)
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profile_by_id_found(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee("E-2001")]
-    }
-
-    result = employee_profile_repo.get_employee_profile_by_id(
-        " E-2001 "
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profile_by_id"
+)
+def test_get_employee_by_id_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee("E-2001")]
     )
 
-    assert len(result["items"]) == 1
-    assert result["items"][0]["EMPL_ID"] == "E-2001"
-
-    args = mock_get_list_plan.call_args.kwargs
-
-    assert isinstance(args["filters"], FiltersEnvelope)
-    assert args["page"].limit == 1
-
-
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profile_by_id_not_found(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": []
-    }
-
-    result = employee_profile_repo.get_employee_profile_by_id(
-        "DOES-NOT-EXIST"
+    result = employee_profile_service.get_employee_by_id(
+        "E-2001"
     )
 
-    assert result["items"] == []
-    assert result["page"]["has_more"] is False
+    assert len(result.items) == 1
+    assert result.items[0].employee_id == "E-2001"
+
+    mock_repo.assert_called_once_with(
+        empl_id="E-2001",
+        columns=None,
+    )
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employee_profile_by_id_columns(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profile_by_id"
+)
+def test_get_employee_by_id_with_columns(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
+    )
 
-    columns = ["employeeId", "firstName"]
+    columns = [
+        "employeeId",
+        "firstName",
+    ]
 
-    employee_profile_repo.get_employee_profile_by_id(
+    result = employee_profile_service.get_employee_by_id(
         "E-1001",
         columns=columns,
     )
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert args["columns"] == columns
+    assert len(result.items) == 1
+
+    mock_repo.assert_called_once_with(
+        empl_id="E-1001",
+        columns=columns,
+    )
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profile_by_id"
+)
+def test_get_employee_by_id_not_found(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[]
+    )
+
+    result = employee_profile_service.get_employee_by_id(
+        "NOT-FOUND"
+    )
+
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employee_profile_by_id"
+)
+def test_get_employee_by_id_metadata(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor=None,
+        has_more=False,
+    )
+
+    result = employee_profile_service.get_employee_by_id(
+        "E-1001"
+    )
+
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+    assert result.metadata.applied_filters is not None
 
 
 # ============================================================================
-# get_employees_by_manager
+# get_direct_reports
 # ============================================================================
 
 
-def test_get_employees_by_manager_empty_manager():
-    result = employee_profile_repo.get_employees_by_manager("")
+def test_get_direct_reports_empty_manager_id():
+    result = employee_profile_service.get_direct_reports("")
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
-
-
-def test_get_employees_by_manager_whitespace_manager():
-    result = employee_profile_repo.get_employees_by_manager("   ")
-
-    assert result["items"] == []
-    assert result["page"]["has_more"] is False
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employees_by_manager_success(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
+def test_get_direct_reports_none_manager_id():
+    result = employee_profile_service.get_direct_reports(None)
 
-    mock_execute_query.return_value = {
-        "items": [
+    assert result.items == []
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_manager"
+)
+def test_get_direct_reports_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[
             _employee("E-1001"),
             _employee("E-1002"),
         ]
-    }
+    )
 
-    result = employee_profile_repo.get_employees_by_manager(
+    result = employee_profile_service.get_direct_reports(
         "M-100"
     )
 
-    assert len(result["items"]) == 2
+    assert len(result.items) == 2
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert isinstance(args["filters"], FiltersEnvelope)
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["mgr_empl_id"] == "M-100"
+
+    assert isinstance(
+        kwargs["page"],
+        PaginationModel,
+    )
+
+    assert isinstance(
+        kwargs["sort"],
+        SortModel,
+    )
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employees_by_manager_custom_page_sort_columns(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_manager"
+)
+def test_get_direct_reports_custom_page_sort_columns(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor="NEXT",
+        has_more=True,
+    )
 
-    page = PaginationModel(limit=7)
+    page = PaginationModel(limit=5)
 
     sort = SortModel(
-        field="firstName",
+        field="employeeId",
         order="desc",
     )
 
-    columns = ["employeeId", "firstName"]
+    columns = [
+        "employeeId",
+        "firstName",
+    ]
 
-    employee_profile_repo.get_employees_by_manager(
+    result = employee_profile_service.get_direct_reports(
         mgr_empl_id="M-100",
         page=page,
         sort=sort,
         columns=columns,
     )
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert len(result.items) == 1
+    assert result.metadata.cursor == "NEXT"
+    assert result.metadata.has_more is True
 
-    assert args["page"] is page
-    assert args["sort"] is sort
-    assert args["columns"] == columns
+    kwargs = mock_repo.call_args.kwargs
 
-    mock_execute_query.assert_called_once_with(
-        mock_plan.sql,
-        mock_plan.params,
-        limit=7,
+    assert kwargs["mgr_empl_id"] == "M-100"
+    assert kwargs["page"] is page
+    assert kwargs["sort"] is sort
+    assert kwargs["columns"] == columns
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_manager"
+)
+def test_get_direct_reports_empty_result(mock_repo):
+    mock_repo.return_value = _repo_result(items=[])
+
+    result = employee_profile_service.get_direct_reports(
+        "M-100"
     )
 
+    assert result.items == []
+    assert result.metadata.has_more is False
+
 
 # ============================================================================
-# get_employees_by_org
+# get_employees_in_org
 # ============================================================================
 
 
-def test_get_employees_by_org_empty_org():
-    result = employee_profile_repo.get_employees_by_org("")
+def test_get_employees_in_org_empty_org():
+    result = employee_profile_service.get_employees_in_org("")
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
-
-
-def test_get_employees_by_org_whitespace_org():
-    result = employee_profile_repo.get_employees_by_org(" ")
-
-    assert result["items"] == []
-    assert result["page"]["has_more"] is False
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employees_by_org_success(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
+def test_get_employees_in_org_none_org():
+    result = employee_profile_service.get_employees_in_org(None)
 
-    mock_execute_query.return_value = {
-        "items": [
+    assert result.items == []
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_org"
+)
+def test_get_employees_in_org_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[
             _employee("E-1001"),
             _employee("E-1002"),
         ]
-    }
+    )
 
-    result = employee_profile_repo.get_employees_by_org(
+    result = employee_profile_service.get_employees_in_org(
         "ORG-001"
     )
 
-    assert len(result["items"]) == 2
+    assert len(result.items) == 2
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert isinstance(args["filters"], FiltersEnvelope)
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["org_id"] == "ORG-001"
+
+    assert isinstance(
+        kwargs["page"],
+        PaginationModel,
+    )
+
+    assert isinstance(
+        kwargs["sort"],
+        SortModel,
+    )
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employees_by_org_custom_arguments(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_org"
+)
+def test_get_employees_in_org_custom_arguments(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor="ORG-NEXT",
+        has_more=True,
+    )
 
-    page = PaginationModel(limit=3)
+    page = PaginationModel(limit=7)
 
     sort = SortModel(
         field="employeeId",
-        order="asc",
+        order="desc",
     )
 
     columns = [
@@ -558,20 +549,38 @@ def test_get_employees_by_org_custom_arguments(
         "organizationId",
     ]
 
-    result = employee_profile_repo.get_employees_by_org(
+    result = employee_profile_service.get_employees_in_org(
         org_id="ORG-001",
         page=page,
         sort=sort,
         columns=columns,
     )
 
-    assert len(result["items"]) == 1
+    assert len(result.items) == 1
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert result.metadata.cursor == "ORG-NEXT"
+    assert result.metadata.has_more is True
 
-    assert args["page"] is page
-    assert args["sort"] is sort
-    assert args["columns"] == columns
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["org_id"] == "ORG-001"
+    assert kwargs["page"] is page
+    assert kwargs["sort"] is sort
+    assert kwargs["columns"] == columns
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_org"
+)
+def test_get_employees_in_org_empty_result(mock_repo):
+    mock_repo.return_value = _repo_result(items=[])
+
+    result = employee_profile_service.get_employees_in_org(
+        "ORG-001"
+    )
+
+    assert result.items == []
 
 
 # ============================================================================
@@ -580,60 +589,74 @@ def test_get_employees_by_org_custom_arguments(
 
 
 def test_get_employees_by_clearance_empty_status():
-    result = employee_profile_repo.get_employees_by_clearance("")
+    result = (
+        employee_profile_service
+        .get_employees_by_clearance("")
+    )
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
-
-
-def test_get_employees_by_clearance_whitespace_status():
-    result = employee_profile_repo.get_employees_by_clearance("   ")
-
-    assert result["items"] == []
-    assert result["page"]["has_more"] is False
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_employees_by_clearance_success(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
+def test_get_employees_by_clearance_none_status():
+    result = (
+        employee_profile_service
+        .get_employees_by_clearance(None)
+    )
 
-    mock_execute_query.return_value = {
-        "items": [
+    assert result.items == []
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_clearance"
+)
+def test_get_employees_by_clearance_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[
             _employee("E-1001"),
             _employee("E-1002"),
         ]
-    }
-
-    result = employee_profile_repo.get_employees_by_clearance(
-        "Active"
     )
 
-    assert len(result["items"]) == 2
+    result = (
+        employee_profile_service
+        .get_employees_by_clearance("Active")
+    )
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert isinstance(args["filters"], FiltersEnvelope)
+    assert len(result.items) == 2
+
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["clearance_status"] == "Active"
+
+    assert isinstance(
+        kwargs["page"],
+        PaginationModel,
+    )
+
+    assert isinstance(
+        kwargs["sort"],
+        SortModel,
+    )
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_clearance"
+)
 def test_get_employees_by_clearance_custom_arguments(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor="CLEARANCE-NEXT",
+        has_more=True,
+    )
 
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
-
-    page = PaginationModel(limit=4)
+    page = PaginationModel(limit=3)
 
     sort = SortModel(
         field="employeeId",
@@ -645,20 +668,44 @@ def test_get_employees_by_clearance_custom_arguments(
         "clearanceStatus",
     ]
 
-    result = employee_profile_repo.get_employees_by_clearance(
-        clearance_status="Active",
-        page=page,
-        sort=sort,
-        columns=columns,
+    result = (
+        employee_profile_service
+        .get_employees_by_clearance(
+            clearance_status="Active",
+            page=page,
+            sort=sort,
+            columns=columns,
+        )
     )
 
-    assert len(result["items"]) == 1
+    assert len(result.items) == 1
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert result.metadata.cursor == "CLEARANCE-NEXT"
+    assert result.metadata.has_more is True
 
-    assert args["page"] is page
-    assert args["sort"] is sort
-    assert args["columns"] == columns
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["clearance_status"] == "Active"
+    assert kwargs["page"] is page
+    assert kwargs["sort"] is sort
+    assert kwargs["columns"] == columns
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_employees_by_clearance"
+)
+def test_get_employees_by_clearance_empty_result(
+    mock_repo,
+):
+    mock_repo.return_value = _repo_result(items=[])
+
+    result = (
+        employee_profile_service
+        .get_employees_by_clearance("Active")
+    )
+
+    assert result.items == []
 
 
 # ============================================================================
@@ -666,198 +713,180 @@ def test_get_employees_by_clearance_custom_arguments(
 # ============================================================================
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_defaults(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-
-    mock_execute_query.return_value = {
-        "items": [
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_success(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[
             _employee("E-1001"),
             _employee("E-1002"),
         ]
-    }
+    )
 
-    result = employee_profile_repo.get_personnel_roster()
+    result = employee_profile_service.get_personnel_roster()
 
-    assert len(result["items"]) == 2
-    assert result["page"]["has_more"] is False
+    assert len(result.items) == 2
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
 
-    assert isinstance(args["filters"], FiltersEnvelope)
+    mock_repo.assert_called_once()
 
-    # get_personnel_roster uses default personnel roster selection.
-    assert (
-        args["columns"]
-        == employee_profile_repo.PERSONNEL_ROSTER_SELECT
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_empty(mock_repo):
+    mock_repo.return_value = _repo_result(items=[])
+
+    result = employee_profile_service.get_personnel_roster()
+
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_dict_filters(mock_repo):
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
+    )
+
+    result = employee_profile_service.get_personnel_roster(
+        filters={}
+    )
+
+    assert len(result.items) == 1
+
+    kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        kwargs["filters"],
+        FiltersEnvelope,
     )
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_dict_filters(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_filters_envelope(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
-
-    result = employee_profile_repo.get_personnel_roster(
-        filters={
-            "employeeId": {
-                "eq": "E-1001"
-            }
-        }
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
     )
-
-    assert len(result["items"]) == 1
-
-    args = mock_get_list_plan.call_args.kwargs
-    assert isinstance(args["filters"], FiltersEnvelope)
-
-
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_filter_envelope(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
 
     filters = FiltersEnvelope(filters={})
 
-    result = employee_profile_repo.get_personnel_roster(
+    result = employee_profile_service.get_personnel_roster(
         filters=filters
     )
 
-    assert len(result["items"]) == 1
+    assert len(result.items) == 1
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert args["filters"] is filters
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["filters"] is filters
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_custom_columns(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_custom_page_sort_columns(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
-
-    columns = [
-        "employeeId",
-        "firstName",
-    ]
-
-    employee_profile_repo.get_personnel_roster(
-        columns=columns
+    mock_repo.return_value = _repo_result(
+        items=[_employee()],
+        cursor="ROSTER-NEXT",
+        has_more=True,
     )
 
-    args = mock_get_list_plan.call_args.kwargs
-    assert args["columns"] == columns
-
-
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_custom_page_and_sort(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
-):
-    mock_get_list_plan.return_value = mock_plan
-
-    mock_execute_query.return_value = {
-        "items": [_employee()]
-    }
-
-    page = PaginationModel(limit=25)
+    page = PaginationModel(limit=10)
 
     sort = SortModel(
         field="employeeId",
         order="desc",
     )
 
-    employee_profile_repo.get_personnel_roster(
-        page=page,
+    columns = [
+        "employeeId",
+        "firstName",
+        "lastName",
+    ]
+
+    result = employee_profile_service.get_personnel_roster(
+        filters=None,
         sort=sort,
+        page=page,
+        columns=columns,
     )
 
-    args = mock_get_list_plan.call_args.kwargs
+    assert len(result.items) == 1
 
-    assert args["page"] is page
-    assert args["sort"] is sort
+    assert result.metadata.cursor == "ROSTER-NEXT"
+    assert result.metadata.has_more is True
 
-    mock_execute_query.assert_called_once_with(
-        mock_plan.sql,
-        mock_plan.params,
-        limit=25,
-    )
+    kwargs = mock_repo.call_args.kwargs
+
+    assert kwargs["sort"] is sort
+    assert kwargs["page"] is page
+    assert kwargs["columns"] == columns
 
 
-@patch("db.repositories.employee_profile_repo.encode_cursor")
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_pagination_has_more(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_encode_cursor,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_default_sort_page(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-    mock_encode_cursor.return_value = "ROSTER-NEXT"
-
-    page = PaginationModel(limit=2)
-
-    mock_execute_query.return_value = {
-        "items": [
-            _employee("E-1"),
-            _employee("E-2"),
-            _employee("E-3"),
-        ]
-    }
-
-    result = employee_profile_repo.get_personnel_roster(
-        page=page
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
     )
 
-    assert len(result["items"]) == 2
-    assert result["page"]["has_more"] is True
-    assert result["page"]["cursor"] == "ROSTER-NEXT"
+    employee_profile_service.get_personnel_roster()
+
+    kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        kwargs["page"],
+        PaginationModel,
+    )
+
+    assert isinstance(
+        kwargs["sort"],
+        SortModel,
+    )
+
+    assert kwargs["sort"].field == "lastName"
+    assert kwargs["sort"].order == "asc"
 
 
-@patch("db.repositories.employee_profile_repo.execute_query")
-@patch("db.repositories.employee_profile_repo._builder.get_list_plan")
-def test_get_personnel_roster_empty(
-    mock_get_list_plan,
-    mock_execute_query,
-    mock_plan,
+@patch(
+    "domain.services.employee_profile_service."
+    "employee_profile_repo.get_personnel_roster"
+)
+def test_get_personnel_roster_metadata_filters(
+    mock_repo,
 ):
-    mock_get_list_plan.return_value = mock_plan
-    mock_execute_query.return_value = {
-        "items": []
-    }
+    mock_repo.return_value = _repo_result(
+        items=[_employee()]
+    )
 
-    result = employee_profile_repo.get_personnel_roster()
+    filters = FiltersEnvelope(filters={})
 
-    assert result["items"] == []
-    assert result["page"]["cursor"] is None
-    assert result["page"]["has_more"] is False
+    result = employee_profile_service.get_personnel_roster(
+        filters=filters
+    )
+
+    assert result.metadata is not None
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
