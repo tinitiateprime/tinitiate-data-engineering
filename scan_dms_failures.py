@@ -1,892 +1,308 @@
-"""
-Unit tests for domain.services.employee_profile_service.
-"""
+# domain/models/employee_profile.py
 
-from unittest.mock import patch
+from datetime import date
+from typing import List, Optional
 
-import pytest
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
 
-from core.filters import FiltersEnvelope, SortModel
-from core.pagination import PaginationModel
-from domain.services import employee_profile_service
-
-
-# ============================================================================
-# Sample data
-# ============================================================================
+from .metadata import MetadataModel
 
 
-def _employee(
-    employee_id="E-1001",
-    first_name="John",
-    last_name="Doe",
-):
+class EmployeeProfileResponse(BaseModel):
+    """Single employee profile response"""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+    )
+
+    # ============================================================
+    # Employee Identity
+    # ============================================================
+
+    empl_id: str = Field(
+        ...,
+        alias="employeeId",
+        validation_alias=AliasChoices(
+            "employeeId",
+            "emplId",
+            "EMPL_ID",
+            "empl_id",
+        ),
+        max_length=12,
+        description="Employee ID.",
+    )
+
+    first_name: Optional[str] = Field(
+        None,
+        alias="firstName",
+        validation_alias=AliasChoices(
+            "firstName",
+            "FIRST_NAME",
+            "first_name",
+        ),
+        max_length=20,
+        description="Employee first name.",
+    )
+
+    last_name: Optional[str] = Field(
+        None,
+        alias="lastName",
+        validation_alias=AliasChoices(
+            "lastName",
+            "LAST_NAME",
+            "last_name",
+        ),
+        max_length=25,
+        description="Employee last name.",
+    )
+
+    last_first_name: Optional[str] = Field(
+        None,
+        alias="lastFirstName",
+        validation_alias=AliasChoices(
+            "lastFirstName",
+            "LAST_FIRST_NAME",
+            "last_first_name",
+        ),
+        max_length=25,
+        description="Employee name in Last, First format.",
+    )
+
+    # ============================================================
+    # Position
+    # ============================================================
+
+    title_desc: Optional[str] = Field(
+        None,
+        alias="titleDesc",
+        validation_alias=AliasChoices(
+            "titleDesc",
+            "TITLE_DESC",
+            "title_desc",
+        ),
+        max_length=30,
+        description="Employee job title description.",
+    )
+
+    job_code: Optional[str] = Field(
+        None,
+        alias="jobCode",
+        validation_alias=AliasChoices(
+            "jobCode",
+            "JOB_CODE",
+            "job_code",
+        ),
+        max_length=10,
+        description="Employee job code.",
+    )
+
+    s_empl_type_cd: Optional[str] = Field(
+        None,
+        alias="emplTypeCd",
+        validation_alias=AliasChoices(
+            "emplTypeCd",
+            "S_EMPL_TYPE_CD",
+            "s_empl_type_cd",
+        ),
+        max_length=1,
+        description="Employee type code.",
+    )
+
+    # ============================================================
+    # Organization
+    # ============================================================
+
+    org_id: Optional[str] = Field(
+        None,
+        alias="orgId",
+        validation_alias=AliasChoices(
+            "orgId",
+            "ORG_ID",
+            "org_id",
+        ),
+        max_length=20,
+        description="Organization ID.",
+    )
+
+    dept_name: Optional[str] = Field(
+        None,
+        alias="deptName",
+        validation_alias=AliasChoices(
+            "deptName",
+            "DEPT_NAME",
+            "dept_name",
+        ),
+        max_length=50,
+        description="Department name.",
+    )
+
+    # ============================================================
+    # Location
+    # ============================================================
+
+    loc_name: Optional[str] = Field(
+        None,
+        alias="locName",
+        validation_alias=AliasChoices(
+            "locName",
+            "LOC_NAME",
+            "loc_name",
+        ),
+        max_length=50,
+        description="Location name.",
+    )
+
+    loc_city: Optional[str] = Field(
+        None,
+        alias="locCity",
+        validation_alias=AliasChoices(
+            "locCity",
+            "LOC_CITY",
+            "loc_city",
+        ),
+        max_length=50,
+        description="Location city.",
+    )
+
+    # ============================================================
+    # Manager
+    # ============================================================
+
+    mgr_name: Optional[str] = Field(
+        None,
+        alias="mgrName",
+        validation_alias=AliasChoices(
+            "mgrName",
+            "MGR_NAME",
+            "mgr_name",
+        ),
+        max_length=25,
+        description="Manager name.",
+    )
+
+    mgr_empl_id: Optional[str] = Field(
+        None,
+        alias="mgrEmplId",
+        validation_alias=AliasChoices(
+            "mgrEmplId",
+            "MGR_EMPL_ID",
+            "mgr_empl_id",
+        ),
+        max_length=12,
+        description="Manager employee ID.",
+    )
+
+    # ============================================================
+    # Employment Details
+    # ============================================================
+
+    hire_date: Optional[str] = Field(
+        None,
+        alias="hireDate",
+        validation_alias=AliasChoices(
+            "hireDate",
+            "HIRE_DATE",
+            "hire_date",
+        ),
+        description="Employee hire date.",
+    )
+
+    email_addr: Optional[str] = Field(
+        None,
+        alias="emailAddr",
+        validation_alias=AliasChoices(
+            "emailAddr",
+            "EMAIL_ADDR",
+            "email_addr",
+            "emailAddress",
+            "email_address",
+        ),
+        max_length=45,
+        description="Employee email address.",
+    )
+
+    # ============================================================
+    # Clearance
+    # ============================================================
+
+    clearance_status: Optional[str] = Field(
+        None,
+        alias="clearanceStatus",
+        validation_alias=AliasChoices(
+            "clearanceStatus",
+            "clearance_status",
+            "CLEARANCE_STATUS",
+        ),
+        max_length=128,
+        description="Employee clearance status.",
+    )
+
+    clearance_status_date: Optional[str] = Field(
+        None,
+        alias="clearanceStatusDate",
+        validation_alias=AliasChoices(
+            "clearanceStatusDate",
+            "clearance_status_date",
+            "CLEARANCE_STATUS_DATE",
+        ),
+        description="Date of clearance status.",
+    )
+
+    clearance_eligibility: Optional[str] = Field(
+        None,
+        alias="clearanceEligibility",
+        validation_alias=AliasChoices(
+            "clearanceEligibility",
+            "clearance_eligibility",
+            "CLEARANCE_ELIGIBILITY",
+        ),
+        max_length=128,
+        description="Employee clearance eligibility.",
+    )
+
+    # ============================================================
+    # Field Validators
+    # ============================================================
+
+    @field_validator(
+        "hire_date",
+        "clearance_status_date",
+        mode="before",
+    )
+    @classmethod
+    def convert_date_to_string(cls, value):
+        """
+        Convert date objects to ISO-format strings.
+        """
+
+        if value is None:
+            return value
+
+        if isinstance(value, date):
+            return value.isoformat()
+
+        if isinstance(value, str):
+            return value
+
+        return str(value)
+
+
+class EmployeeProfileSearchServiceResponse(BaseModel):
     """
-    Valid EmployeeProfileResponse payload.
-
-    Aliases are used because EmployeeProfileResponse is configured with
-    populate_by_name=True.
+    Internal domain-level response for employee profile searches.
+    Decoupled from V1/V2 specific JSON envelopes.
     """
-    return {
-        "employeeId": employee_id,
-        "firstName": first_name,
-        "lastName": last_name,
-        "lastFirstName": f"{last_name}, {first_name}",
-        "titleDescription": "Software Engineer",
-        "jobCode": "ENG-01",
-        "employmentType": "EMP",
-        "organizationId": "ORG-001",
-        "departmentName": "Engineering",
-        "locationName": "Dallas",
-        "locationCity": "Dallas",
-        "managerName": "Jane Manager",
-        "managerEmployeeId": "M-100",
-        "hireDate": "2020-01-01",
-        "clearanceStatus": "Active",
-        "clearanceStatusDate": "2025-01-01",
-        "clearanceEligibility": "Eligible",
-    }
 
-
-def _repo_result(
-    items=None,
-    cursor=None,
-    has_more=False,
-):
-    return {
-        "items": items if items is not None else [],
-        "page": {
-            "cursor": cursor,
-            "has_more": has_more,
-        },
-    }
-
-
-# ============================================================================
-# _empty_response
-# ============================================================================
-
-
-def test_empty_response():
-    result = employee_profile_service._empty_response()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-    assert result.metadata.applied_filters is None
-
-
-# ============================================================================
-# get_all_employees
-# ============================================================================
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
     )
 
-    result = employee_profile_service.get_all_employees()
-
-    assert len(result.items) == 1
-    assert result.items[0].employee_id == "E-1001"
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_called_once()
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_empty(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_all_employees()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_with_dict_filters(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    result = employee_profile_service.get_all_employees(
-        filters={}
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_with_filters_envelope(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_all_employees(
-        filters=filters
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_custom_page_sort_columns(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="NEXT-CURSOR",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=5)
-
-    sort = SortModel(
-        field="firstName",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-        "lastName",
-    ]
-
-    result = employee_profile_service.get_all_employees(
-        filters=None,
-        sort=sort,
-        page=page,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "NEXT-CURSOR"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["sort"] is sort
-    assert kwargs["page"] is page
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_default_page_and_sort(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    employee_profile_service.get_all_employees()
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-    assert kwargs["sort"].field == "lastName"
-    assert kwargs["sort"].order == "asc"
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_multiple_items(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001", "John", "Doe"),
-            _employee("E-1002", "Jane", "Smith"),
-        ]
-    )
-
-    result = employee_profile_service.get_all_employees()
-
-    assert len(result.items) == 2
-
-    assert result.items[0].employee_id == "E-1001"
-    assert result.items[1].employee_id == "E-1002"
-
-
-# ============================================================================
-# get_employee_by_id
-# ============================================================================
-
-
-def test_get_employee_by_id_empty_id():
-    result = employee_profile_service.get_employee_by_id("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employee_by_id_none_id():
-    result = employee_profile_service.get_employee_by_id(None)
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee("E-2001")]
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-2001"
-    )
-
-    assert len(result.items) == 1
-    assert result.items[0].employee_id == "E-2001"
-
-    mock_repo.assert_called_once_with(
-        empl_id="E-2001",
-        columns=None,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_with_columns(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-    ]
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-1001",
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    mock_repo.assert_called_once_with(
-        empl_id="E-1001",
-        columns=columns,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_not_found(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[]
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "NOT-FOUND"
-    )
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_metadata(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor=None,
-        has_more=False,
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-1001"
-    )
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    assert result.metadata.applied_filters is not None
-
-
-# ============================================================================
-# get_direct_reports
-# ============================================================================
-
-
-def test_get_direct_reports_empty_manager_id():
-    result = employee_profile_service.get_direct_reports("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_direct_reports_none_manager_id():
-    result = employee_profile_service.get_direct_reports(None)
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_direct_reports(
-        "M-100"
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["mgr_empl_id"] == "M-100"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_custom_page_sort_columns(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=5)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-    ]
-
-    result = employee_profile_service.get_direct_reports(
-        mgr_empl_id="M-100",
-        page=page,
-        sort=sort,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-    assert result.metadata.cursor == "NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["mgr_empl_id"] == "M-100"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_empty_result(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_direct_reports(
-        "M-100"
-    )
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-# ============================================================================
-# get_employees_in_org
-# ============================================================================
-
-
-def test_get_employees_in_org_empty_org():
-    result = employee_profile_service.get_employees_in_org("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employees_in_org_none_org():
-    result = employee_profile_service.get_employees_in_org(None)
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_employees_in_org(
-        "ORG-001"
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["org_id"] == "ORG-001"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_custom_arguments(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="ORG-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=7)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "organizationId",
-    ]
-
-    result = employee_profile_service.get_employees_in_org(
-        org_id="ORG-001",
-        page=page,
-        sort=sort,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "ORG-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["org_id"] == "ORG-001"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_empty_result(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_employees_in_org(
-        "ORG-001"
-    )
-
-    assert result.items == []
-
-
-# ============================================================================
-# get_employees_by_clearance
-# ============================================================================
-
-
-def test_get_employees_by_clearance_empty_status():
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("")
-    )
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employees_by_clearance_none_status():
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance(None)
-    )
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
-)
-def test_get_employees_by_clearance_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("Active")
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["clearance_status"] == "Active"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
-)
-def test_get_employees_by_clearance_custom_arguments(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="CLEARANCE-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=3)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "clearanceStatus",
-    ]
-
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance(
-            clearance_status="Active",
-            page=page,
-            sort=sort,
-            columns=columns,
-        )
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "CLEARANCE-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["clearance_status"] == "Active"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
-)
-def test_get_employees_by_clearance_empty_result(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("Active")
-    )
-
-    assert result.items == []
-
-
-# ============================================================================
-# get_personnel_roster
-# ============================================================================
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_personnel_roster()
-
-    assert len(result.items) == 2
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_called_once()
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_empty(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_personnel_roster()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_dict_filters(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    result = employee_profile_service.get_personnel_roster(
-        filters={}
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_filters_envelope(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=filters
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_custom_page_sort_columns(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="ROSTER-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=10)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-        "lastName",
-    ]
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=None,
-        sort=sort,
-        page=page,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "ROSTER-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["sort"] is sort
-    assert kwargs["page"] is page
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_default_sort_page(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    employee_profile_service.get_personnel_roster()
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-    assert kwargs["sort"].field == "lastName"
-    assert kwargs["sort"].order == "asc"
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_metadata_filters(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=filters
-    )
-
-    assert result.metadata is not None
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
+    items: List[EmployeeProfileResponse]
+    metadata: MetadataModel
