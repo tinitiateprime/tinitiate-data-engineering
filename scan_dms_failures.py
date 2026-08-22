@@ -1,908 +1,1227 @@
 """
-Unit tests for domain.services.employee_profile_service.
-
-Covers:
-- _empty_response
-- get_all_employees
-- get_employee_by_id
-- get_direct_reports
-- get_employees_in_org
-- get_employees_by_clearance
-- get_personnel_roster
-- default pagination/sorting
-- explicit pagination/sorting
-- dictionary filter conversion
-- FiltersEnvelope passthrough
-- empty parameter branches
-- empty repository results
-- metadata propagation
+V1 employee handlers.
 """
 
-from unittest.mock import patch
+import json
 
-import pytest
-
-from core.filters import FiltersEnvelope, SortModel
+from core.config import settings
+from core.exceptions import ResourceNotFoundError
+from core.filters import SortModel
 from core.pagination import PaginationModel
-from domain.services import employee_profile_service
+from core.responses import api_handler
+from core.utils import LambdaUtils
+
+from domain.services import (
+    get_all_certifications,
+    get_all_employees,
+    get_all_training,
+    get_certifications_by_employee,
+    get_certifications_by_org,
+    get_certifications_by_status,
+    get_direct_reports,
+    get_employee_by_id,
+    get_employees_by_clearance,
+    get_employees_in_org,
+    get_personnel_roster,
+    get_training_by_employee,
+    get_training_by_org,
+    get_training_by_status,
+    get_training_by_type,
+)
+
+from pydantic import ValidationError
+from v1.logic import router
+from v1.schemas.employees import (
+    EMPLOYEE_CERTIFICATION_FILTER_CONTEXT,
+    EMPLOYEE_FILTER_CONTEXT,
+    V1EmployeeCertificationListResponseModel,
+    V1EmployeeCertificationResponseModel,
+    V1EmployeeListResponseModel,
+    V1EmployeePathParams,
+    V1EmployeeResponseModel,
+    V1EmployeeTrainingListResponseModel,
+    V1EmployeeTrainingResponseModel,
+    V1MetadataModel,
+)
 
 
-# ============================================================================
-# Sample data
-# ============================================================================
+# =============================================================================
+# EMPLOYEE PROFILE SEARCH
+# =============================================================================
 
-
-def _employee(
-    employee_id="E-1001",
-    first_name="John",
-    last_name="Doe",
-):
+@router.route(
+    "POST",
+    r"/v1/employees/profiles/search",
+    is_regex=False,
+)
+@api_handler
+def search_employee_profiles_v1(event, context):
     """
-    Valid EmployeeProfileResponse payload.
+    Search for employee profiles.
 
-    Aliases are used because EmployeeProfileResponse is configured with
-    populate_by_name=True.
+    Args:
+        event: Lambda event containing JSON body with
+               'filters', 'sort', 'page', and 'columns'.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of employee profiles.
     """
-    return {
-        "employeeId": employee_id,
-        "firstName": first_name,
-        "lastName": last_name,
-        "lastFirstName": f"{last_name}, {first_name}",
-        "titleDescription": "Software Engineer",
-        "jobCode": "ENG-01",
-        "employmentType": "EMP",
-        "organizationId": "ORG-001",
-        "departmentName": "Engineering",
-        "locationName": "Dallas",
-        "locationCity": "Dallas",
-        "managerName": "Jane Manager",
-        "managerEmployeeId": "M-100",
-        "hireDate": "2020-01-01",
-        "clearanceStatus": "Active",
-        "clearanceStatusDate": "2025-01-01",
-        "clearanceEligibility": "Eligible",
-    }
 
+    try:
+        body = LambdaUtils.get_json_body(event)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON body provided.")
 
-def _repo_result(
-    items=None,
-    cursor=None,
-    has_more=False,
-):
-    return {
-        "items": items if items is not None else [],
-        "page": {
-            "cursor": cursor,
-            "has_more": has_more,
-        },
-    }
+    filters_dict = body.get("filters", {})
+    sort = SortModel(**body.get("sort", {}))
+    page = PaginationModel(**body.get("page", {}))
+    columns = body.get("columns")
 
-
-# ============================================================================
-# _empty_response
-# ============================================================================
-
-
-def test_empty_response():
-    result = employee_profile_service._empty_response()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-    assert result.metadata.applied_filters is None
-
-
-# ============================================================================
-# get_all_employees
-# ============================================================================
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    result = employee_profile_service.get_all_employees()
-
-    assert len(result.items) == 1
-    assert result.items[0].empl_id == "E-1001"
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_called_once()
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_empty(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_all_employees()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_with_dict_filters(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    result = employee_profile_service.get_all_employees(
-        filters={}
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_with_filters_envelope(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_all_employees(
-        filters=filters
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_custom_page_sort_columns(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="NEXT-CURSOR",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=5)
-
-    sort = SortModel(
-        field="firstName",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-        "lastName",
-    ]
-
-    result = employee_profile_service.get_all_employees(
-        filters=None,
+    results = get_all_employees(
+        filters=filters_dict,
         sort=sort,
         page=page,
         columns=columns,
     )
 
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "NEXT-CURSOR"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["sort"] is sort
-    assert kwargs["page"] is page
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_default_page_and_sort(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    employee_profile_service.get_all_employees()
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-    assert kwargs["sort"].field == "lastName"
-    assert kwargs["sort"].order == "asc"
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profiles"
-)
-def test_get_all_employees_multiple_items(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001", "John", "Doe"),
-            _employee("E-1002", "Jane", "Smith"),
-        ]
-    )
-
-    result = employee_profile_service.get_all_employees()
-
-    assert len(result.items) == 2
-
-    assert result.items[0].empl_id == "E-1001"
-    assert result.items[1].empl_id == "E-1002"
-
-
-# ============================================================================
-# get_employee_by_id
-# ============================================================================
-
-
-def test_get_employee_by_id_empty_id():
-    result = employee_profile_service.get_employee_by_id("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employee_by_id_none_id():
-    result = employee_profile_service.get_employee_by_id(None)
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee("E-2001")]
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-2001"
-    )
-
-    assert len(result.items) == 1
-    assert result.items[0].empl_id == "E-2001"
-
-    mock_repo.assert_called_once_with(
-        empl_id="E-2001",
-        columns=None,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_with_columns(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-    ]
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-1001",
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    mock_repo.assert_called_once_with(
-        empl_id="E-1001",
-        columns=columns,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_not_found(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[]
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "NOT-FOUND"
-    )
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employee_profile_by_id"
-)
-def test_get_employee_by_id_metadata(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor=None,
-        has_more=False,
-    )
-
-    result = employee_profile_service.get_employee_by_id(
-        "E-1001"
-    )
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    assert result.metadata.applied_filters is not None
-
-
-# ============================================================================
-# get_direct_reports
-# ============================================================================
-
-
-def test_get_direct_reports_empty_manager_id():
-    result = employee_profile_service.get_direct_reports("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_direct_reports_none_manager_id():
-    result = employee_profile_service.get_direct_reports(None)
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_direct_reports(
-        "M-100"
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["mgr_empl_id"] == "M-100"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_custom_page_sort_columns(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=5)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-    ]
-
-    result = employee_profile_service.get_direct_reports(
-        mgr_empl_id="M-100",
-        page=page,
-        sort=sort,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-    assert result.metadata.cursor == "NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["mgr_empl_id"] == "M-100"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_manager"
-)
-def test_get_direct_reports_empty_result(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_direct_reports(
-        "M-100"
-    )
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-# ============================================================================
-# get_employees_in_org
-# ============================================================================
-
-
-def test_get_employees_in_org_empty_org():
-    result = employee_profile_service.get_employees_in_org("")
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employees_in_org_none_org():
-    result = employee_profile_service.get_employees_in_org(None)
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_employees_in_org(
-        "ORG-001"
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["org_id"] == "ORG-001"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_custom_arguments(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="ORG-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=7)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "organizationId",
-    ]
-
-    result = employee_profile_service.get_employees_in_org(
-        org_id="ORG-001",
-        page=page,
-        sort=sort,
-        columns=columns,
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "ORG-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["org_id"] == "ORG-001"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_org"
-)
-def test_get_employees_in_org_empty_result(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_employees_in_org(
-        "ORG-001"
-    )
-
-    assert result.items == []
-
-
-# ============================================================================
-# get_employees_by_clearance
-# ============================================================================
-
-
-def test_get_employees_by_clearance_empty_status():
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("")
-    )
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-def test_get_employees_by_clearance_none_status():
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance(None)
-    )
-
-    assert result.items == []
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
-)
-def test_get_employees_by_clearance_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("Active")
-    )
-
-    assert len(result.items) == 2
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["clearance_status"] == "Active"
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
-)
-def test_get_employees_by_clearance_custom_arguments(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="CLEARANCE-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=3)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "clearanceStatus",
-    ]
-
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance(
-            clearance_status="Active",
-            page=page,
-            sort=sort,
-            columns=columns,
+    if not results.items:
+        raise ResourceNotFoundError(
+            message="Employees with filters not found",
+            details={"filters": filters_dict},
         )
+
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
     )
 
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "CLEARANCE-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["clearance_status"] == "Active"
-    assert kwargs["page"] is page
-    assert kwargs["sort"] is sort
-    assert kwargs["columns"] == columns
+    return response.model_dump(by_alias=True)
 
 
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_employees_by_clearance"
+# =============================================================================
+# PERSONNEL ROSTER
+# =============================================================================
+
+@router.route(
+    "POST",
+    r"/v1/employees/profiles/roster",
+    is_regex=False,
 )
-def test_get_employees_by_clearance_empty_result(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(items=[])
+@api_handler
+def get_personnel_roster_v1(event, context):
+    """
+    Retrieve the personnel roster (alpha-report fields) via POST search.
 
-    result = (
-        employee_profile_service
-        .get_employees_by_clearance("Active")
-    )
+    Args:
+        event: Lambda event containing JSON body with
+               'filters', 'sort', 'page', and 'columns'.
+        context: Lambda context.
 
-    assert result.items == []
+    Returns:
+        Dict containing metadata and the list of personnel-roster records.
+    """
 
+    try:
+        body = LambdaUtils.get_json_body(event)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON body provided.")
 
-# ============================================================================
-# get_personnel_roster
-# ============================================================================
+    filters_dict = body.get("filters", {})
+    sort = SortModel(**body.get("sort", {}))
+    page = PaginationModel(**body.get("page", {}))
+    columns = body.get("columns")
 
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_success(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[
-            _employee("E-1001"),
-            _employee("E-1002"),
-        ]
-    )
-
-    result = employee_profile_service.get_personnel_roster()
-
-    assert len(result.items) == 2
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_called_once()
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_empty(mock_repo):
-    mock_repo.return_value = _repo_result(items=[])
-
-    result = employee_profile_service.get_personnel_roster()
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_dict_filters(mock_repo):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    result = employee_profile_service.get_personnel_roster(
-        filters={}
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_filters_envelope(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
-    )
-
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=filters
-    )
-
-    assert len(result.items) == 1
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
-)
-def test_get_personnel_roster_custom_page_sort_columns(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()],
-        cursor="ROSTER-NEXT",
-        has_more=True,
-    )
-
-    page = PaginationModel(limit=10)
-
-    sort = SortModel(
-        field="employeeId",
-        order="desc",
-    )
-
-    columns = [
-        "employeeId",
-        "firstName",
-        "lastName",
-    ]
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=None,
+    results = get_personnel_roster(
+        filters=filters_dict,
         sort=sort,
         page=page,
         columns=columns,
     )
 
-    assert len(result.items) == 1
+    # No 404 on empty - bulk sync feed.
+    # The caller expects a 200 with an empty data array.
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
+    )
 
-    assert result.metadata.cursor == "ROSTER-NEXT"
-    assert result.metadata.has_more is True
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert kwargs["sort"] is sort
-    assert kwargs["page"] is page
-    assert kwargs["columns"] == columns
+    return response.model_dump(by_alias=True)
 
 
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
+# =============================================================================
+# DIRECT REPORTS
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/manager/?$",
+    is_regex=True,
 )
-def test_get_personnel_roster_default_sort_page(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
+@api_handler
+def get_employee_direct_reports_blank_v1(event, context):
+    """
+    Handle requests to the employee direct reports endpoint missing an ID.
+
+    Raises:
+        ValueError: Always, as manager ID is a required path parameter.
+    """
+
+    err = ValueError("Manager ID Missing.")
+    err.add_note(
+        "Manager ID is required, e.g. /v1/employees/profiles/manager/12345"
     )
-
-    employee_profile_service.get_personnel_roster()
-
-    kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        kwargs["page"],
-        PaginationModel,
-    )
-
-    assert isinstance(
-        kwargs["sort"],
-        SortModel,
-    )
-
-    assert kwargs["sort"].field == "lastName"
-    assert kwargs["sort"].order == "asc"
+    raise err
 
 
-@patch(
-    "domain.services.employee_profile_service."
-    "employee_profile_repo.get_personnel_roster"
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/manager/(?P<mgr_empl_id>[^/]+)",
+    is_regex=True,
 )
-def test_get_personnel_roster_metadata_filters(
-    mock_repo,
-):
-    mock_repo.return_value = _repo_result(
-        items=[_employee()]
+@api_handler
+def get_employee_direct_reports_v1(event, context):
+    """
+    Retrieve direct reports for a specific manager.
+
+    Args:
+        event: Lambda event containing 'mgr_empl_id' path parameter and
+               optional query params for 'limit', 'cursor',
+               'sortField', and 'sortOrder'.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of direct reports.
+    """
+
+    mgr_empl_id = LambdaUtils.get_path_param(event, "mgr_empl_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not mgr_empl_id:
+        raise ValueError("Manager Employee ID is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
     )
 
-    filters = FiltersEnvelope(filters={})
-
-    result = employee_profile_service.get_personnel_roster(
-        filters=filters
+    sort = SortModel(
+        field=query_params.get("sortField", "LAST_NAME"),
+        order=query_params.get("sortOrder", "asc"),
     )
 
-    assert result.metadata is not None
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_direct_reports(
+        mgr_empl_id=mgr_empl_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    if not results.items:
+        raise ResourceNotFoundError(
+            message=f"Employees with Manager ID {mgr_empl_id} not found.",
+            details={"mgr_empl_id": mgr_empl_id},
+        )
+
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# EMPLOYEES BY ORGANIZATION
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/org/?$",
+    is_regex=True,
+)
+@api_handler
+def get_org_blank_v1(event, context):
+    """
+    Handle requests to the organization profiles endpoint missing an ID.
+
+    Raises:
+        ValueError: Always, as organization ID is a required path parameter.
+    """
+
+    err = ValueError("Organization ID is Missing.")
+    err.add_note(
+        "Organization ID is required, e.g. "
+        "/v1/employees/profiles/org/01.626.N32.10"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/org/(?P<org_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_employees_by_org_v1(event, context):
+    """
+    Retrieve all employees belonging to a specific organization.
+
+    Args:
+        event: Lambda event containing 'org_id' path parameter and
+               optional query params for pagination and sorting.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of employees in the organization.
+    """
+
+    org_id = LambdaUtils.get_path_param(event, "org_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not org_id:
+        err = ValueError("Organization ID Missing.")
+        err.add_note(
+            "Organization ID is required, e.g. "
+            "/v1/employees/profiles/org/01.626.N32.10"
+        )
+        raise err
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "LAST_NAME"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_employees_in_org(
+        org_id=org_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    if not results.items:
+        raise ResourceNotFoundError(
+            message=f"Employees with Org ID {org_id} not found.",
+            details={"org_id": org_id},
+        )
+
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# EMPLOYEES BY CLEARANCE
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/clearance/?$",
+    is_regex=True,
+)
+@api_handler
+def get_employees_by_clearance_blank_v1(event, context):
+    """
+    Handle requests to the clearance profiles endpoint missing a clearance
+    status.
+
+    Raises:
+        ValueError: Always.
+    """
+
+    err = ValueError("Clearance Status is Missing.")
+    err.add_note(
+        "Clearance Status is required, e.g. "
+        "/v1/employees/profiles/clearance/active"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/clearance/(?P<status>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_employees_by_clearance_v1(event, context):
+    """
+    Retrieve employees filtered by their clearance status.
+
+    Args:
+        event: Lambda event containing 'status' path parameter and
+               optional query params for pagination and sorting.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of matching employees.
+    """
+
+    status = LambdaUtils.get_path_param(event, "status")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not status:
+        raise ValueError("Clearance status is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "LAST_NAME"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_employees_by_clearance(
+        clearance_status=status,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# EMPLOYEE BY ID
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/?$",
+    is_regex=True,
+)
+@api_handler
+def get_employee_profile_blank_v1(event, context):
+    """
+    Handle requests to the employee profiles endpoint missing an employee ID.
+    """
+
+    err = ValueError("Employee ID is Missing.")
+    err.add_note(
+        "Employee ID is required, e.g. /v1/employees/profiles/12345"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/profiles/(?P<empl_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_employee_profile_v1(event, context):
+    """
+    Retrieve a single employee's profile by employee ID.
+
+    Args:
+        event: Lambda event containing 'empl_id' path parameter.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and employee profile data.
+    """
+
+    empl_id = LambdaUtils.get_path_param(event, "empl_id")
+
+    if not empl_id:
+        raise ValueError(
+            "Employee ID is required as path parameter, "
+            "e.g. /v1/employees/profiles/12345."
+        )
+    elif empl_id == "search":
+        # Protects against accidental GET when caller likely wanted POST
+        # /v1/employees/profiles/search.
+        raise ValueError(
+            "Employee ID sent as 'search'; did you mean to POST?"
+        )
+    else:
+        try:
+            validated_params = V1EmployeePathParams(empl_id=empl_id)
+            clean_empl_id = validated_params.empl_id
+        except ValidationError as e:
+            raise ValueError(
+                f"Invalid Employee ID format: {e.errors()[0]['msg']}"
+            )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_employee_by_id(
+        clean_empl_id,
+        columns=columns,
+    )
+
+    if not results.items:
+        raise ResourceNotFoundError(
+            message=f"Employee with ID {empl_id} not found",
+            details={
+                "empl_id": empl_id,
+                "columns": columns,
+            },
+        )
+
+    response = V1EmployeeListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeResponseModel.model_validate(item.model_dump())
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# EMPLOYEE TRAINING SEARCH
+# =============================================================================
+
+@router.route(
+    "POST",
+    r"/v1/employees/training/search",
+    is_regex=False,
+)
+@api_handler
+def search_employee_training_v1(event, context):
+    """
+    Search for employee training records using filters, sorting,
+    and pagination.
+
+    Args:
+        event: Lambda event containing JSON body with
+               'filters', 'sort', 'page', and 'columns'.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of training records.
+    """
+
+    try:
+        body = LambdaUtils.get_json_body(event)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON body provided.")
+
+    filters_data = body.get("filters", {})
+    sort = SortModel(**body.get("sort", {}))
+    page = PaginationModel(**body.get("page", {}))
+    columns = body.get("columns")
+
+    results = get_all_training(
+        filters=filters_data,
+        sort=sort,
+        page=page,
+        columns=columns,
+    )
+
+    response = V1EmployeeTrainingListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeTrainingResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# TRAINING BY STATUS
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/status/?$",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_status_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing a training status.
+    """
+
+    err = ValueError("Training Status is Missing.")
+    err.add_note(
+        "Training Status is required, e.g. "
+        "/v1/employees/training/status/CURRENT"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/status/(?P<status>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_status_v1(event, context):
+    """
+    Retrieve training records filtered by status.
+
+    Args:
+        event: Lambda event containing 'status' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of training records.
+    """
+
+    status = LambdaUtils.get_path_param(event, "status")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not status:
+        raise ValueError("Training status is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "expiration_date"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_training_by_status(
+        status=status,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeTrainingListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeTrainingResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# TRAINING BY ORGANIZATION
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/org/?$",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_org_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing an organization ID.
+    """
+
+    err = ValueError("Organization ID is Missing.")
+    err.add_note(
+        "Organization ID is required, e.g. "
+        "/v1/employees/training/org/01.626.N32.10"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/org/(?P<org_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_org_v1(event, context):
+    """
+    Retrieve all training records for employees within a specific
+    organization.
+
+    Args:
+        event: Lambda event containing 'org_id' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of training records.
+    """
+
+    org_id = LambdaUtils.get_path_param(event, "org_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not org_id:
+        raise ValueError("Organization ID is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "LAST_FIRST_NAME"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_training_by_org(
+        org_id=org_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeTrainingListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeTrainingResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# TRAINING BY TYPE
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/type/?$",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_type_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing a Record Type.
+    """
+
+    err = ValueError("Record Type is Missing.")
+    err.add_note(
+        "Record Type is required, e.g. "
+        "/v1/employees/training/type/TRAINING"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/type/(?P<record_type>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_training_by_type_v1(event, context):
+    """
+    Retrieve training records filtered by record type.
+
+    Args:
+        event: Lambda event containing 'record_type' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of training records.
+    """
+
+    record_type = LambdaUtils.get_path_param(event, "record_type")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not record_type:
+        raise ValueError("Training record type is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "completed_date"),
+        order=query_params.get("sortOrder", "desc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_training_by_type(
+        record_type=record_type,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeTrainingListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeTrainingResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# TRAINING BY EMPLOYEE
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/?$",
+    is_regex=True,
+)
+@api_handler
+def get_employee_training_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing an employee ID.
+    """
+
+    err = ValueError("Employee ID is Missing.")
+    err.add_note(
+        "Employee ID is required, e.g. /v1/employees/training/12345"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/training/(?P<empl_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_employee_training_v1(event, context):
+    """
+    Retrieve all training records for a specific employee.
+
+    Args:
+        event: Lambda event containing 'empl_id' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of training records
+        for the employee.
+    """
+
+    empl_id = LambdaUtils.get_path_param(event, "empl_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not empl_id:
+        raise ValueError("Employee ID is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "completed_date"),
+        order=query_params.get("sortOrder", "desc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_training_by_employee(
+        empl_id=empl_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeTrainingListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeTrainingResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# EMPLOYEE CERTIFICATIONS
+# =============================================================================
+
+@router.route(
+    "POST",
+    r"/v1/employees/certifications/search",
+    is_regex=False,
+)
+@api_handler
+def search_employee_certifications_v1(event, context):
+    """
+    Search for employee certification records using filters, sorting,
+    and pagination.
+
+    Args:
+        event: Lambda event containing JSON body with
+               'filters', 'sort', 'page', and 'columns'.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of certification records.
+    """
+
+    try:
+        body = LambdaUtils.get_json_body(event)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON body provided.")
+
+    filters_data = body.get("filters", {})
+    sort = SortModel(**body.get("sort", {}))
+    page = PaginationModel(**body.get("page", {}))
+    columns = body.get("columns")
+
+    results = get_all_certifications(
+        filters=filters_data,
+        sort=sort,
+        page=page,
+        columns=columns,
+    )
+
+    response = V1EmployeeCertificationListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeCertificationResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# CERTIFICATIONS BY STATUS
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/status/?$",
+    is_regex=True,
+)
+@api_handler
+def get_certifications_by_status_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing a certification status.
+    """
+
+    err = ValueError("Certification Status is Missing.")
+    err.add_note(
+        "Certification Status is required, e.g. "
+        "/v1/employees/certifications/status/EXPIRED"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/status/(?P<status>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_certifications_by_status_v1(event, context):
+    """
+    Retrieve certification records filtered by status
+    (CURRENT, EXPIRED, EXPIRING_SOON).
+
+    Args:
+        event: Lambda event containing 'status' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of certification records.
+    """
+
+    status = LambdaUtils.get_path_param(event, "status")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not status:
+        raise ValueError("Certification status is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "expiration_date"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_certifications_by_status(
+        status=status,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeCertificationListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeCertificationResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# CERTIFICATIONS BY ORGANIZATION
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/org/?$",
+    is_regex=True,
+)
+@api_handler
+def get_certifications_by_org_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing an organization ID.
+    """
+
+    err = ValueError("Organization ID is Missing.")
+    err.add_note(
+        "Organization ID is required, e.g. "
+        "/v1/employees/certifications/org/01.626.N32.10"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/org/(?P<org_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_certifications_by_org_v1(event, context):
+    """
+    Retrieve all certification records for employees within a specific
+    organization.
+
+    Args:
+        event: Lambda event containing 'org_id' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of certification records.
+    """
+
+    org_id = LambdaUtils.get_path_param(event, "org_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not org_id:
+        raise ValueError("Organization ID is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "employee_name"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_certifications_by_org(
+        org_id=org_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeCertificationListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeCertificationResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
+
+
+# =============================================================================
+# CERTIFICATIONS BY EMPLOYEE
+# =============================================================================
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/?$",
+    is_regex=True,
+)
+@api_handler
+def get_employee_certifications_blank_v1(event, context):
+    """
+    Handle requests to the endpoint missing an employee ID.
+    """
+
+    err = ValueError("Employee ID is Missing.")
+    err.add_note(
+        "Employee ID is required, e.g. "
+        "/v1/employees/certifications/12345"
+    )
+    raise err
+
+
+@router.route(
+    "GET",
+    r"/v1/employees/certifications/(?P<empl_id>[^/]+)",
+    is_regex=True,
+)
+@api_handler
+def get_employee_certifications_v1(event, context):
+    """
+    Retrieve all certification records for a specific employee.
+
+    Args:
+        event: Lambda event containing 'empl_id' path parameter and
+               optional query params.
+        context: Lambda context.
+
+    Returns:
+        Dict containing metadata and the list of certification records
+        for the employee.
+    """
+
+    empl_id = LambdaUtils.get_path_param(event, "empl_id")
+    query_params = LambdaUtils.get_all_query_params(event)
+
+    if not empl_id:
+        raise ValueError("Employee ID is required.")
+
+    page = PaginationModel(
+        limit=int(
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            )
+        ),
+        cursor=query_params.get("cursor"),
+    )
+
+    sort = SortModel(
+        field=query_params.get("sortField", "expiration_date"),
+        order=query_params.get("sortOrder", "asc"),
+    )
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    results = get_certifications_by_employee(
+        empl_id=empl_id,
+        page=page,
+        sort=sort,
+        columns=columns,
+    )
+
+    response = V1EmployeeCertificationListResponseModel(
+        metadata=V1MetadataModel(**results.metadata.model_dump()),
+        data=[
+            V1EmployeeCertificationResponseModel.model_validate(
+                item.model_dump()
+            )
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(by_alias=True)
