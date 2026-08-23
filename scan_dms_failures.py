@@ -343,14 +343,6 @@ def test_get_project_financial_v1_not_found(
 
 @patch(
     "v1.handlers.project_financial."
-    "V1ProjectFinancialResponseModel"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "V1ProjectFinancialDetailsResponseModel"
-)
-@patch(
-    "v1.handlers.project_financial."
     "get_project_financial_details"
 )
 @patch(
@@ -375,8 +367,6 @@ def test_get_project_financial_v1_success(
     mock_get_columns,
     mock_parse_filters,
     mock_service,
-    mock_outer_schema,
-    mock_inner_schema,
     mock_context,
 ):
     mock_get_path_param.return_value = "P-1001"
@@ -387,40 +377,15 @@ def test_get_project_financial_v1_success(
     }
 
     mock_get_columns.return_value = None
+    mock_parse_filters.return_value = MagicMock()
 
-    mock_filters = MagicMock()
-    mock_parse_filters.return_value = mock_filters
-
-    mock_item = MagicMock()
-
-    mock_results = MagicMock()
-    mock_results.items = [mock_item]
-    mock_results.metadata.applied_filters = None
-    mock_results.metadata.model_dump.return_value = {
-        "cursor": None,
-        "has_more": False,
-        "applied_filters": None,
-    }
-
+    mock_results = create_service_response(
+        items=[PROJECT_FINANCIAL_DATA],
+        cursor=None,
+        has_more=False,
+        applied_filters=None,
+    )
     mock_service.return_value = mock_results
-
-    validated_item = MagicMock()
-    mock_inner_schema.model_validate.return_value = validated_item
-
-    mock_response = MagicMock()
-    mock_response.model_dump.return_value = {
-        "metadata": {
-            "cursor": None,
-            "hasMore": False,
-        },
-        "data": [
-            {
-                "projId": "P-1001",
-            }
-        ],
-    }
-
-    mock_outer_schema.return_value = mock_response
 
     event = build_event(
         method="GET",
@@ -441,13 +406,10 @@ def test_get_project_financial_v1_success(
     mock_service.assert_called_once()
 
     service_call = mock_service.call_args
-
     assert service_call.kwargs["proj_id"] == "P-1001"
     assert service_call.kwargs["page"].limit == 10
     assert service_call.kwargs["page"].cursor is None
     assert service_call.kwargs["columns"] is None
-
-    mock_outer_schema.assert_called_once()
 
 
 # ============================================================
@@ -477,20 +439,14 @@ def test_list_project_financials_v1_success(
         "cursor": None,
     }
 
-    mock_filters = MagicMock()
-    mock_parse_filters.return_value = mock_filters
+    mock_parse_filters.return_value = MagicMock()
 
-    mock_item = MagicMock()
-    mock_item.model_dump.return_value = vars(PROJECT_FINANCIAL_DATA).copy()
-
-    mock_results = MagicMock()
-    mock_results.items = [mock_item]
-    mock_results.metadata.model_dump.return_value = {
-        "cursor": None,
-        "has_more": False,
-        "applied_filters": None,
-    }
-
+    mock_results = create_service_response(
+        items=[PROJECT_FINANCIAL_DATA],
+        cursor=None,
+        has_more=False,
+        applied_filters=None,
+    )
     mock_service.return_value = mock_results
 
     event = build_event(
@@ -512,9 +468,8 @@ def test_list_project_financials_v1_success(
     mock_service.assert_called_once()
 
     service_call = mock_service.call_args
-
     assert service_call.kwargs["page"].limit == 10
-
+    assert service_call.kwargs["page"].cursor is None
 
 
 # ============================================================
