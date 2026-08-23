@@ -456,14 +456,6 @@ def test_get_project_financial_v1_success(
 
 @patch(
     "v1.handlers.project_financial."
-    "V1ProjectFinancialResponseModel"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "V1ProjectFinancialsResponseModel"
-)
-@patch(
-    "v1.handlers.project_financial."
     "search_project_financials"
 )
 @patch(
@@ -478,8 +470,6 @@ def test_list_project_financials_v1_success(
     mock_get_query_params,
     mock_parse_filters,
     mock_service,
-    mock_outer_schema,
-    mock_inner_schema,
     mock_context,
 ):
     mock_get_query_params.return_value = {
@@ -491,6 +481,7 @@ def test_list_project_financials_v1_success(
     mock_parse_filters.return_value = mock_filters
 
     mock_item = MagicMock()
+    mock_item.model_dump.return_value = vars(PROJECT_FINANCIAL_DATA).copy()
 
     mock_results = MagicMock()
     mock_results.items = [mock_item]
@@ -501,20 +492,6 @@ def test_list_project_financials_v1_success(
     }
 
     mock_service.return_value = mock_results
-
-    validated_item = MagicMock()
-    mock_inner_schema.model_validate.return_value = validated_item
-
-    mock_response = MagicMock()
-    mock_response.model_dump.return_value = {
-        "metadata": {
-            "cursor": None,
-            "hasMore": False,
-        },
-        "data": [],
-    }
-
-    mock_outer_schema.return_value = mock_response
 
     event = build_event(
         method="GET",
@@ -538,7 +515,6 @@ def test_list_project_financials_v1_success(
 
     assert service_call.kwargs["page"].limit == 10
 
-    mock_outer_schema.assert_called_once()
 
 
 # ============================================================
