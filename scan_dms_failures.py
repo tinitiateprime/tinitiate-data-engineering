@@ -1,635 +1,675 @@
-import json
-from datetime import date
-from types import SimpleNamespace
+"""
+Unit tests for db.repositories.project_forecasts.
+"""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from v1.handlers import project_financial
-from v1.handlers.project_financial import (
-    get_project_financial_v1,
-    list_project_financials_v1,
-    search_project_financials_v1,
-)
+from core.filters import FiltersEnvelope
+from core.pagination import PaginationModel
+from core.sort import SortModel
+
+from db.repositories import project_forecasts
 
 
 # ============================================================
-# Test data
+# TEST DATA
 # ============================================================
 
-PROJECT_FINANCIAL_DATA = SimpleNamespace(
+
+def _forecast(
     row_id=1,
-    proj_id="PROJ-1001",
-    cust_name="ABC Customer",
-    proj_start_dt=date(2020, 1, 1),
-    proj_end_dt=date(2030, 12, 31),
-    s_proj_rpt_cd="ACTIVE",
-    proj_name="Project Alpha",
-    org_id="ORG-001",
-    prime_contr_id="PRIME-001",
-    status_cd="A",
-    proj_type_cd="FIXED_PRICE",
-    proj_mgr_name="John Smith",
+    proj_id="P-1001",
     lvl_no=1,
-    value_total_amount=1000000.0,
-    project_value_cost=800000.0,
-    project_value_fee=200000.0,
-    proj_f_tot_amt=900000.0,
-    cost_funded=700000.0,
-    fee_funded=150000.0,
-    total_billed=500000.0,
-    billed_cost=400000.0,
-    billed_fee=100000.0,
-    open_billing_detail_amt=50000.0,
-    open_commit_amt=300000.0,
-)
-
-
-# ============================================================
-# Helpers
-# ============================================================
-
-def create_service_response(
-    items=None,
-    cursor=None,
-    has_more=False,
-    applied_filters=None,
-):
-    """
-    Create a mocked response returned by the project-financial
-    service functions.
-    """
-    response = MagicMock()
-    response.items = items if items is not None else []
-
-    response.metadata = MagicMock()
-    response.metadata.cursor = cursor
-    response.metadata.has_more = has_more
-    response.metadata.applied_filters = applied_filters
-    response.metadata.model_dump.return_value = {
-        "cursor": cursor,
-        "has_more": has_more,
-        "applied_filters": applied_filters,
-    }
-
-    return response
-
-
-def get_response_body(response):
-    """
-    Safely deserialize the Lambda response body.
-    """
-    body = response.get("body")
-    if isinstance(body, str):
-        return json.loads(body)
-    return body
-
-
-def build_event(
-    *,
-    method="POST",
-    path="/v1/project-financials/search",
-    body="{}",
-    path_parameters=None,
-    query_parameters=None,
-    request_id="unit-test-request-id",
+    proj_name="Project Alpha",
 ):
     return {
-        "httpMethod": method,
-        "path": path,
-        "resource": path,
-        "headers": {"Content-Type": "application/json"},
-        "queryStringParameters": query_parameters,
-        "pathParameters": path_parameters,
-        "requestContext": {
-            "requestId": request_id,
-            "stage": "test",
-            "httpMethod": method,
-            "resourcePath": path,
-        },
-        "body": body,
-        "isBase64Encoded": False,
+        "row_id": row_id,
+        "proj_id": proj_id,
+        "lvl_no": lvl_no,
+        "cust_name": "ABC Customer",
+        "proj_name": proj_name,
+        "proj_type_dc": "FIXED_PRICE",
+        "reporting_category": "ACTIVE",
+        "prime_contr_id": "PRIME-001",
+        "org_id": "ORG-001",
+        "active_fl": "Y",
+        "proj_mgr_name": "John Smith",
+        "proj_start_dt": "2026-01-01",
+        "proj_end_dt": "2026-12-31",
+        "value_total_amount": 1000000.0,
+        "project_value_cost": 800000.0,
+        "project_value_fee": 200000.0,
+        "proj_f_tot_amt": 900000.0,
+        "cost_funded": 700000.0,
+        "fee_funded": 200000.0,
+        "total_billed": 500000.0,
+        "billed_cost": 400000.0,
+        "billed_fee": 100000.0,
+        "open_billing_detail_amt": 50000.0,
+        "open_commit_amt": 300000.0,
+        "eac": 950000.0,
+        "etc": 450000.0,
+        "date_75_expended": "2026-08-01",
+        "date_100_expended": "2026-12-01",
+        "forecast_by_period": "{}",
+        "total_count_hidden": 99,
     }
 
 
 # ============================================================
-# Fixtures
+# QUERY SPEC
 # ============================================================
 
-@pytest.fixture
-def mock_context():
-    """Create a mock AWS Lambda context."""
-    context = MagicMock()
-    context.function_name = "project-financial-unit-test"
-    context.aws_request_id = "unit-test-request-id"
-    context.memory_limit_in_mb = 128
-    context.get_remaining_time_in_millis.return_value = 30000
-    return context
 
+def test_project_forecasts_view_spec():
+    """
+    Verify important QuerySpec configuration.
+    """
 
-# ============================================================
-# SEARCH PROJECT FINANCIALS - SUCCESS
-# ============================================================
+    spec = project_forecasts.PROJECT_FORECASTS_VIEW_SPEC
 
-@patch.object(project_financial.LambdaUtils, "get_json_body")
-@patch.object(project_financial, "search_project_financials")
-def test_search_project_financials_success(
-    mock_search_service,
-    mock_get_json_body,
-    mock_context,
-):
-    mock_get_json_body.return_value = {}
+    assert spec is not None
+    assert spec.table == "gold.project_forecasts_vw"
+    assert spec.logical_id_field == "row_id"
 
-    mock_search_service.return_value = create_service_response(
-        items=[PROJECT_FINANCIAL_DATA],
-        cursor="next-token",
-        has_more=True,
-    )
+    assert spec.use_array_any is False
 
-    event = build_event()
+    assert "row_id" in spec.column_map
+    assert "proj_id" in spec.column_map
+    assert "lvl_no" in spec.column_map
+    assert "proj_name" in spec.column_map
+    assert "eac" in spec.column_map
+    assert "etc" in spec.column_map
+    assert "forecast_by_period" in spec.column_map
 
-    response = project_financial.search_project_financials_v1(
-        event,
-        mock_context,
-    )
+    assert "row_id" in spec.allowed_sort_fields
+    assert "proj_id" in spec.allowed_sort_fields
+    assert "proj_name" in spec.allowed_sort_fields
+    assert "eac" in spec.allowed_sort_fields
+    assert "etc" in spec.allowed_sort_fields
 
-    assert response is not None
-    assert isinstance(response, dict)
-    assert response["statusCode"] == 200
-    assert "body" in response
-
-    response_body = get_response_body(response)
-    assert response_body is not None
-
-    mock_get_json_body.assert_called_once()
-    mock_search_service.assert_called_once()
+    assert "row_id" in spec.default_select
+    assert "proj_id" in spec.default_select
+    assert "proj_name" in spec.default_select
+    assert "forecast_by_period" in spec.default_select
 
 
 # ============================================================
-# SEARCH PROJECT FINANCIALS - EMPTY
+# _format_paginated_response
 # ============================================================
 
-@patch.object(project_financial.LambdaUtils, "get_json_body")
-@patch.object(project_financial, "search_project_financials")
-def test_search_project_financials_empty(
-    mock_search_service,
-    mock_get_json_body,
-    mock_context,
-):
-    mock_get_json_body.return_value = {}
 
-    mock_search_service.return_value = create_service_response(
+def test_format_paginated_response_empty():
+    """
+    Empty result should return no cursor and has_more False.
+    """
+
+    result = project_forecasts._format_paginated_response(
         items=[],
-        cursor=None,
-        has_more=False,
+        limit=10,
     )
 
-    event = build_event()
-
-    response = project_financial.search_project_financials_v1(
-        event,
-        mock_context,
-    )
-
-    assert response is not None
-    assert isinstance(response, dict)
-    assert response["statusCode"] == 200
-    assert "body" in response
-
-    response_body = get_response_body(response)
-    assert response_body is not None
-
-    mock_get_json_body.assert_called_once()
-    mock_search_service.assert_called_once()
-
-
-# ============================================================
-# SEARCH PROJECT FINANCIALS - INVALID JSON
-# ============================================================
-
-@patch.object(project_financial.LambdaUtils, "get_json_body")
-def test_search_project_financials_invalid_json(
-    mock_get_json_body,
-    mock_context,
-):
-    mock_get_json_body.side_effect = ValueError(
-        "Invalid JSON body provided."
-    )
-
-    event = build_event(body="{invalid-json")
-
-    response = project_financial.search_project_financials_v1(
-        event,
-        mock_context,
-    )
-
-    assert response is not None
-    assert isinstance(response, dict)
-    assert response["statusCode"] == 400
-    assert "body" in response
-
-    response_body = get_response_body(response)
-    response_text = json.dumps(response_body)
-
-    assert "Invalid JSON body provided." in response_text
-
-    mock_get_json_body.assert_called_once()
-
-
-# ============================================================
-# DETAILS HANDLER EXISTS
-# ============================================================
-
-def test_get_project_financial_details_handler_exists():
-    assert hasattr(
-        project_financial,
-        "get_project_financial_details",
-    )
-
-    assert callable(
-        project_financial.get_project_financial_details
-    )
-
-
-# ============================================================
-# GET PROJECT FINANCIAL - MISSING PROJECT ID
-# ============================================================
-
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_path_param"
-)
-def test_get_project_financial_v1_missing_project_id(
-    mock_get_path_param,
-    mock_context,
-):
-    mock_get_path_param.return_value = None
-
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials/",
-        body=None,
-        path_parameters={},
-    )
-
-    response = get_project_financial_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 400
-
-
-# ============================================================
-# GET PROJECT FINANCIAL - NOT FOUND
-# ============================================================
-
-@patch(
-    "v1.handlers.project_financial."
-    "get_project_financial_details"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "parse_filters_from_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_columns_query_parameter"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_all_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_path_param"
-)
-def test_get_project_financial_v1_not_found(
-    mock_get_path_param,
-    mock_get_query_params,
-    mock_get_columns,
-    mock_parse_filters,
-    mock_service,
-    mock_context,
-):
-    mock_get_path_param.return_value = "P-1001"
-    mock_get_query_params.return_value = {}
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = MagicMock()
-
-    mock_results = MagicMock()
-    mock_results.items = []
-
-    mock_service.return_value = mock_results
-
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials/P-1001",
-        body=None,
-        path_parameters={"proj_id": "P-1001"},
-    )
-
-    response = get_project_financial_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 404
-
-
-# ============================================================
-# GET PROJECT FINANCIAL - SUCCESS
-# ============================================================
-
-@patch(
-    "v1.handlers.project_financial."
-    "get_project_financial_details"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "parse_filters_from_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_columns_query_parameter"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_all_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_path_param"
-)
-def test_get_project_financial_v1_success(
-    mock_get_path_param,
-    mock_get_query_params,
-    mock_get_columns,
-    mock_parse_filters,
-    mock_service,
-    mock_context,
-):
-    mock_get_path_param.return_value = "P-1001"
-
-    mock_get_query_params.return_value = {
-        "limit": "10",
-        "cursor": None,
-    }
-
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = MagicMock()
-
-    mock_results = create_service_response(
-        items=[PROJECT_FINANCIAL_DATA],
-        cursor=None,
-        has_more=False,
-        applied_filters=None,
-    )
-    mock_service.return_value = mock_results
-
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials/P-1001",
-        body=None,
-        path_parameters={"proj_id": "P-1001"},
-        query_parameters={"limit": "10"},
-        request_id="test-get-success",
-    )
-
-    response = get_project_financial_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    mock_service.assert_called_once()
-
-    service_call = mock_service.call_args
-    assert service_call.kwargs["proj_id"] == "P-1001"
-    assert service_call.kwargs["page"].limit == 10
-    assert service_call.kwargs["page"].cursor is None
-    assert service_call.kwargs["columns"] is None
-
-
-# ============================================================
-# LIST PROJECT FINANCIALS - SUCCESS
-# ============================================================
-
-@patch(
-    "v1.handlers.project_financial."
-    "search_project_financials"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "parse_filters_from_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_all_query_params"
-)
-def test_list_project_financials_v1_success(
-    mock_get_query_params,
-    mock_parse_filters,
-    mock_service,
-    mock_context,
-):
-    mock_get_query_params.return_value = {
-        "limit": "10",
-        "cursor": None,
-    }
-
-    mock_parse_filters.return_value = MagicMock()
-
-    mock_results = create_service_response(
-        items=[PROJECT_FINANCIAL_DATA],
-        cursor=None,
-        has_more=False,
-        applied_filters=None,
-    )
-    mock_service.return_value = mock_results
-
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials",
-        body=None,
-        path_parameters={},
-        query_parameters={"limit": "10"},
-        request_id="test-list-success",
-    )
-
-    response = list_project_financials_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    mock_service.assert_called_once()
-
-    service_call = mock_service.call_args
-    assert service_call.kwargs["page"].limit == 10
-    assert service_call.kwargs["page"].cursor is None
-
-
-# ============================================================
-# SEARCH PROJECT FINANCIALS - JSON DECODE ERROR
-# ============================================================
-
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_json_body"
-)
-def test_search_project_financials_v1_json_decode_error(
-    mock_get_json_body,
-    mock_context,
-):
-    mock_get_json_body.side_effect = json.JSONDecodeError(
-        "Expecting value",
-        "",
-        0,
-    )
-
-    event = build_event(
-        method="POST",
-        path="/v1/project-financials/search",
-        body="{invalid-json",
-        path_parameters={},
-        query_parameters=None,
-        request_id="test-invalid-json",
-    )
-
-    response = search_project_financials_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 400
-
-
-# ============================================================
-# Additional branch coverage
-# ============================================================
-
-@patch.object(project_financial.LambdaUtils, "get_json_body")
-@patch.object(project_financial, "search_project_financials")
-def test_search_project_financials_with_filters_sort_page_columns(
-    mock_search_service,
-    mock_get_json_body,
-    mock_context,
-):
-    mock_get_json_body.return_value = {
-        "filters": {
-            "projId": {
-                "eq": "P-1001",
-            }
-        },
-        "sort": {
-            "field": "projId",
-            "order": "asc",
-        },
+    assert result == {
+        "items": [],
         "page": {
-            "limit": 5,
-            "cursor": "abc",
+            "cursor": None,
+            "has_more": False,
         },
-        "columns": ["projId", "projName"],
     }
 
-    mock_search_service.return_value = create_service_response(
-        items=[PROJECT_FINANCIAL_DATA],
-        cursor=None,
-        has_more=False,
+
+def test_format_paginated_response_less_than_limit():
+    """
+    Fewer records than the requested limit should not paginate.
+    """
+
+    items = [
+        _forecast(row_id=1),
+        _forecast(row_id=2),
+    ]
+
+    result = project_forecasts._format_paginated_response(
+        items=items,
+        limit=10,
     )
 
-    event = build_event(
-        method="POST",
-        path="/v1/project-financials/search",
-        body="{}",
+    assert len(result["items"]) == 2
+    assert result["page"]["cursor"] is None
+    assert result["page"]["has_more"] is False
+
+
+def test_format_paginated_response_exact_limit():
+    """
+    Exactly limit records should not indicate another page.
+    """
+
+    items = [
+        _forecast(row_id=1),
+        _forecast(row_id=2),
+    ]
+
+    result = project_forecasts._format_paginated_response(
+        items=items,
+        limit=2,
     )
 
-    response = search_project_financials_v1(
-        event,
-        mock_context,
+    assert len(result["items"]) == 2
+    assert result["page"]["cursor"] is None
+    assert result["page"]["has_more"] is False
+
+
+@patch("db.repositories.project_forecasts.encode_cursor")
+def test_format_paginated_response_has_more(mock_encode_cursor):
+    """
+    limit + 1 rows should set has_more and create next cursor
+    using the last returned row.
+    """
+
+    mock_encode_cursor.return_value = "encoded-next-cursor"
+
+    items = [
+        _forecast(row_id=1),
+        _forecast(row_id=2),
+        _forecast(row_id=3),
+    ]
+
+    result = project_forecasts._format_paginated_response(
+        items=items,
+        limit=2,
     )
 
-    assert response["statusCode"] == 200
-    mock_search_service.assert_called_once()
+    assert len(result["items"]) == 2
+    assert result["items"][0]["row_id"] == 1
+    assert result["items"][1]["row_id"] == 2
+
+    assert result["page"]["has_more"] is True
+    assert result["page"]["cursor"] == "encoded-next-cursor"
+
+    mock_encode_cursor.assert_called_once_with(2)
 
 
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_path_param"
-)
-def test_get_project_financial_blank_project_id_string(
-    mock_get_path_param,
-    mock_context,
+@patch("db.repositories.project_forecasts.encode_cursor")
+def test_format_paginated_response_removes_total_count_hidden(
+    mock_encode_cursor,
 ):
-    mock_get_path_param.return_value = ""
+    """
+    Internal total_count_hidden field must be removed from
+    returned records.
+    """
 
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials/",
-        body=None,
-        path_parameters={"proj_id": ""},
+    mock_encode_cursor.return_value = "next"
+
+    items = [
+        _forecast(row_id=1),
+        _forecast(row_id=2),
+    ]
+
+    result = project_forecasts._format_paginated_response(
+        items=items,
+        limit=10,
     )
 
-    response = get_project_financial_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 400
+    for item in result["items"]:
+        assert "total_count_hidden" not in item
 
 
-@patch(
-    "v1.handlers.project_financial."
-    "search_project_financials"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "parse_filters_from_query_params"
-)
-@patch(
-    "v1.handlers.project_financial."
-    "LambdaUtils.get_all_query_params"
-)
-def test_list_project_financials_empty(
-    mock_get_query_params,
-    mock_parse_filters,
-    mock_service,
-    mock_context,
+@patch("db.repositories.project_forecasts.encode_cursor")
+def test_format_paginated_response_cursor_uses_last_visible_row(
+    mock_encode_cursor,
 ):
-    mock_get_query_params.return_value = {}
-    mock_parse_filters.return_value = MagicMock()
+    """
+    When the DB returns limit + 1 rows, cursor should be generated
+    from the final row retained after slicing.
+    """
 
-    mock_results = MagicMock()
-    mock_results.items = []
-    mock_results.metadata.model_dump.return_value = {
-        "cursor": None,
-        "has_more": False,
-        "applied_filters": None,
+    mock_encode_cursor.return_value = "cursor-20"
+
+    items = [
+        _forecast(row_id=10),
+        _forecast(row_id=20),
+        _forecast(row_id=30),
+    ]
+
+    result = project_forecasts._format_paginated_response(
+        items=items,
+        limit=2,
+    )
+
+    assert result["page"]["has_more"] is True
+    assert result["page"]["cursor"] == "cursor-20"
+
+    mock_encode_cursor.assert_called_once_with(20)
+
+
+# ============================================================
+# get_project_forecasts
+# ============================================================
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_defaults(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Verify defaults are created when no arguments are supplied.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT * FROM gold.project_forecasts_vw"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [],
     }
-    mock_service.return_value = mock_results
 
-    event = build_event(
-        method="GET",
-        path="/v1/project-financials",
-        body=None,
-        path_parameters={},
-        query_parameters=None,
+    result = project_forecasts.get_project_forecasts()
+
+    assert result["items"] == []
+    assert result["page"]["cursor"] is None
+    assert result["page"]["has_more"] is False
+
+    mock_get_list_plan.assert_called_once()
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(kwargs["filters"], FiltersEnvelope)
+    assert isinstance(kwargs["sort"], SortModel)
+    assert isinstance(kwargs["page"], PaginationModel)
+    assert kwargs["columns"] is None
+
+    mock_execute_query.assert_called_once()
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_dict_filters(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Dictionary filters should be wrapped in FiltersEnvelope.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = ["P-1001"]
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [_forecast()],
+    }
+
+    filters = {
+        "proj_id": "P-1001",
+    }
+
+    result = project_forecasts.get_project_forecasts(
+        filters=filters,
     )
 
-    response = list_project_financials_v1(
-        event,
-        mock_context,
+    assert len(result["items"]) == 1
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(kwargs["filters"], FiltersEnvelope)
+
+    mock_get_list_plan.assert_called_once()
+    mock_execute_query.assert_called_once()
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_filters_envelope(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Existing FiltersEnvelope should be passed directly to builder.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [_forecast()],
+    }
+
+    filters = FiltersEnvelope(filters={})
+
+    result = project_forecasts.get_project_forecasts(
+        filters=filters,
     )
 
-    # Depending on the current handler contract, empty list endpoints
-    # normally return 200 rather than 404.
-    assert response["statusCode"] in (200, 404)
+    assert len(result["items"]) == 1
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert kwargs["filters"] is filters
 
 
-def test_imported_handlers_are_callable():
-    assert callable(search_project_financials_v1)
-    assert callable(list_project_financials_v1)
-    assert callable(get_project_financial_v1)
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_custom_sort(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Custom sort should be forwarded unchanged.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [_forecast()],
+    }
+
+    sort = SortModel(
+        field="proj_id",
+        order="asc",
+    )
+
+    project_forecasts.get_project_forecasts(
+        sort=sort,
+    )
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert kwargs["sort"] is sort
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_custom_page(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Custom PaginationModel should be forwarded unchanged.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [_forecast()],
+    }
+
+    page = PaginationModel(
+        limit=5,
+    )
+
+    project_forecasts.get_project_forecasts(
+        page=page,
+    )
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert kwargs["page"] is page
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_custom_columns(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Requested columns should be forwarded to the builder.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT proj_id, proj_name"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {
+        "items": [_forecast()],
+    }
+
+    columns = [
+        "proj_id",
+        "proj_name",
+    ]
+
+    project_forecasts.get_project_forecasts(
+        columns=columns,
+    )
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert kwargs["columns"] == columns
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_all_arguments(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Verify filters, sort, pagination and columns are all forwarded.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = ["P-1001"]
+
+    mock_get_list_plan.return_value = mock_plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            _forecast(row_id=1),
+        ],
+    }
+
+    filters = FiltersEnvelope(filters={})
+
+    sort = SortModel(
+        field="proj_id",
+        order="desc",
+    )
+
+    page = PaginationModel(
+        limit=10,
+    )
+
+    columns = [
+        "row_id",
+        "proj_id",
+        "proj_name",
+    ]
+
+    result = project_forecasts.get_project_forecasts(
+        filters=filters,
+        sort=sort,
+        page=page,
+        columns=columns,
+    )
+
+    assert len(result["items"]) == 1
+
+    kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert kwargs["filters"] is filters
+    assert kwargs["sort"] is sort
+    assert kwargs["page"] is page
+    assert kwargs["columns"] == columns
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_multiple_items_no_more(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Multiple records <= page limit should return has_more False.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            _forecast(row_id=1),
+            _forecast(row_id=2),
+            _forecast(row_id=3),
+        ],
+    }
+
+    page = PaginationModel(limit=10)
+
+    result = project_forecasts.get_project_forecasts(
+        page=page,
+    )
+
+    assert len(result["items"]) == 3
+    assert result["page"]["has_more"] is False
+    assert result["page"]["cursor"] is None
+
+
+@patch("db.repositories.project_forecasts.encode_cursor")
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_multiple_items_has_more(
+    mock_get_list_plan,
+    mock_execute_query,
+    mock_encode_cursor,
+):
+    """
+    DB result containing limit + 1 records should produce next cursor.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            _forecast(row_id=100),
+            _forecast(row_id=200),
+            _forecast(row_id=300),
+        ],
+    }
+
+    mock_encode_cursor.return_value = "cursor-200"
+
+    page = PaginationModel(limit=2)
+
+    result = project_forecasts.get_project_forecasts(
+        page=page,
+    )
+
+    assert len(result["items"]) == 2
+    assert result["items"][0]["row_id"] == 100
+    assert result["items"][1]["row_id"] == 200
+
+    assert result["page"]["has_more"] is True
+    assert result["page"]["cursor"] == "cursor-200"
+
+    mock_encode_cursor.assert_called_once_with(200)
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_removes_hidden_count(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    total_count_hidden should never appear in returned API records.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+
+    item = _forecast()
+    assert "total_count_hidden" in item
+
+    mock_execute_query.return_value = {
+        "items": [item],
+    }
+
+    result = project_forecasts.get_project_forecasts()
+
+    assert len(result["items"]) == 1
+    assert "total_count_hidden" not in result["items"][0]
+
+
+@patch("db.repositories.project_forecasts.execute_query")
+@patch.object(project_forecasts._builder, "get_list_plan")
+def test_get_project_forecasts_builder_called_with_correct_values(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    """
+    Explicitly validate builder input.
+    """
+
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT TEST"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = {"items": []}
+
+    filters = FiltersEnvelope(filters={})
+    sort = SortModel(field="row_id", order="asc")
+    page = PaginationModel(limit=25)
+    columns = ["row_id", "proj_id"]
+
+    project_forecasts.get_project_forecasts(
+        filters=filters,
+        sort=sort,
+        page=page,
+        columns=columns,
+    )
+
+    mock_get_list_plan.assert_called_once_with(
+        filters=filters,
+        sort=sort,
+        page=page,
+        columns=columns,
+    )
+
+
+# ============================================================
+# BUILDER INITIALIZATION
+# ============================================================
+
+
+def test_builder_exists():
+    """
+    Repository builder must be initialized.
+    """
+
+    assert project_forecasts._builder is not None
+
+
+def test_builder_uses_project_forecasts_spec():
+    """
+    The repository's builder should exist for the Project Forecasts spec.
+    """
+
+    assert project_forecasts.PROJECT_FORECASTS_VIEW_SPEC is not None
+    assert project_forecasts._builder is not None
