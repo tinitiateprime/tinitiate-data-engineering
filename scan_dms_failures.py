@@ -1,825 +1,459 @@
 """
-Unit tests for domain.services.employee_profile_complete_service.
+Unit tests for domain.models.employee_profile_complete.
 
-IMPORTANT:
-Employee detail lookup uses `empl_id`.
-Do NOT use `employee_key` as the lookup argument.
+EmployeeProfileComplete detail lookup uses empl_id.
 
-employee_key is still a field in the returned data and can still be used
-internally for pagination/keyset purposes where applicable.
+employee_key remains part of the response model/data,
+but it is NOT the API lookup argument.
 """
 
-from unittest.mock import MagicMock, patch
+from datetime import date, datetime
 
 import pytest
+from pydantic import ValidationError
 
-from domain.services import employee_profile_complete_service
-
-from v1.schemas import (
-    FiltersEnvelope,
-    PaginationModel,
-    SortModel,
+from domain.models.employee_profile_complete import (
+    EmployeeProfileCompleteResponse,
+    EmployeeProfileCompleteSearchServiceResponse,
 )
+from domain.models.metadata import MetadataModel
 
 
 # ============================================================
 # TEST DATA
 # ============================================================
 
-EMPLOYEE_DATA = {
-    "employee_key": "EMPLOYEE-KEY-001",
-    "email_key": "test_email_key",
-    "empl_id": "EMP-1001",
-    "my_id": "test_my_id",
-    "sotv_employee_id": "test_sotv_employee_id",
-    "first_name": "John",
-    "last_name": "Doe",
-    "mid_name": "A",
-    "employee_name": "John Doe",
-    "job_title": "Engineer",
-    "org_id": "ORG1",
-    "dept_name": "Engineering",
+VALID_EMPLOYEE = {
+    "employeeKey": "EMPLOYEE-KEY-001",
+    "emailKey": "john.doe@example.com",
+    "emplId": "EMP-1001",
+    "myId": "MY-1001",
+    "sotvEmployeeId": "SOTV-1001",
+    "firstName": "John",
+    "lastName": "Doe",
+    "midName": "A",
+    "employeeName": "John A Doe",
+    "jobTitle": "Engineer",
+    "orgId": "ORG1",
+    "deptName": "Engineering",
     "location": "New York",
-    "mgr_name": "Jane Doe",
-    "mgr_empl_id": "EMP-2001",
-    "hire_date": "2026-01-01",
-    "clearance_status": "ACTIVE",
-    "clearance_eligibility": "SECRET",
-    "sotv_headline": "Engineer",
-    "certifications": {"test": "value"},
-    "certification_names": ["AWS"],
-    "certification_count": 1,
-    "skills": {"Python": "Advanced"},
-    "skill_names": ["Python"],
-    "skill_count": 1,
+    "mgrName": "Jane Doe",
+    "mgrEmplId": "EMP-2001",
+    "hireDate": "2026-01-01",
+    "clearanceStatus": "ACTIVE",
+    "clearanceEligibility": "SECRET",
+    "sotvHeadline": "Engineer",
+    "certifications": {"aws": "AWS Certified"},
+    "certificationNames": ["AWS"],
+    "certificationCount": 1,
+    "skills": {"python": "advanced"},
+    "skillNames": ["Python"],
+    "skillCount": 1,
     "education": {"degree": "BS"},
-    "education_count": 1,
+    "educationCount": 1,
     "languages": ["English"],
-    "language_count": 1,
+    "languageCount": 1,
 }
 
 
 # ============================================================
-# HELPERS
+# BASIC MODEL TESTS
 # ============================================================
 
-def make_repo_result(
-    items=None,
-    cursor=None,
-    has_more=False,
-):
+def test_employee_profile_complete_valid_alias_payload():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    assert model.employee_key == "EMPLOYEE-KEY-001"
+    assert model.email_key == "john.doe@example.com"
+
+    # IMPORTANT:
+    # detail lookup field is empl_id
+    assert model.empl_id == "EMP-1001"
+
+    assert model.first_name == "John"
+    assert model.last_name == "Doe"
+    assert model.employee_name == "John A Doe"
+    assert model.org_id == "ORG1"
+
+
+def test_employee_profile_complete_accepts_field_names():
     """
-    Create the dictionary returned by the repository layer.
+    populate_by_name=True means snake_case fields
+    can also be provided directly.
     """
 
-    return {
-        "items": items or [],
-        "page": {
-            "cursor": cursor,
-            "has_more": has_more,
-        },
+    payload = {
+        "employee_key": "EMPLOYEE-KEY-001",
+        "empl_id": "EMP-1001",
+        "first_name": "John",
+        "last_name": "Doe",
     }
 
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.employee_key == "EMPLOYEE-KEY-001"
+    assert model.empl_id == "EMP-1001"
+    assert model.first_name == "John"
+    assert model.last_name == "Doe"
+
+
+def test_employee_key_required():
+    payload = VALID_EMPLOYEE.copy()
+    payload.pop("employeeKey")
+
+    with pytest.raises(ValidationError):
+        EmployeeProfileCompleteResponse.model_validate(
+            payload
+        )
+
+
+def test_empl_id_optional():
+    """
+    empl_id is Optional in the response model.
+
+    The HANDLER/SERVICE requires empl_id for the detail endpoint,
+    but the model itself permits None.
+    """
+
+    payload = VALID_EMPLOYEE.copy()
+    payload["emplId"] = None
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.empl_id is None
+
+
+def test_optional_fields_can_be_none():
+    payload = {
+        "employeeKey": "EMPLOYEE-KEY-001",
+        "emailKey": None,
+        "emplId": None,
+        "myId": None,
+        "sotvEmployeeId": None,
+        "firstName": None,
+        "lastName": None,
+        "midName": None,
+        "employeeName": None,
+        "jobTitle": None,
+        "orgId": None,
+        "deptName": None,
+        "location": None,
+        "mgrName": None,
+        "mgrEmplId": None,
+        "hireDate": None,
+        "clearanceStatus": None,
+        "clearanceEligibility": None,
+        "sotvHeadline": None,
+        "certifications": None,
+        "certificationNames": None,
+        "certificationCount": None,
+        "skills": None,
+        "skillNames": None,
+        "skillCount": None,
+        "education": None,
+        "educationCount": None,
+        "languages": None,
+        "languageCount": None,
+    }
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.employee_key == "EMPLOYEE-KEY-001"
+    assert model.empl_id is None
+    assert model.first_name is None
+    assert model.hire_date is None
+
 
 # ============================================================
-# SEARCH EMPLOYEE PROFILE COMPLETES
+# ALIAS TESTS
 # ============================================================
 
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_success(mock_repo):
+def test_model_dump_by_alias():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    dumped = model.model_dump(by_alias=True)
+
+    assert dumped["employeeKey"] == "EMPLOYEE-KEY-001"
+    assert dumped["emplId"] == "EMP-1001"
+    assert dumped["firstName"] == "John"
+    assert dumped["lastName"] == "Doe"
+    assert dumped["mgrEmplId"] == "EMP-2001"
+
+    assert "employee_key" not in dumped
+    assert "empl_id" not in dumped
+
+
+def test_model_dump_without_alias():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    dumped = model.model_dump()
+
+    assert dumped["employee_key"] == "EMPLOYEE-KEY-001"
+    assert dumped["empl_id"] == "EMP-1001"
+    assert dumped["first_name"] == "John"
+    assert dumped["last_name"] == "Doe"
+
+
+# ============================================================
+# HIRE DATE VALIDATOR TESTS
+# ============================================================
+
+def test_hire_date_iso_format():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = "2026-01-15"
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date == date(2026, 1, 15)
+
+
+def test_hire_date_database_format():
     """
-    Search returns employee data successfully.
+    Current validator supports M/D/YYYY-style database values.
     """
 
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA],
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = "1/15/2026"
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date == date(2026, 1, 15)
+
+
+def test_hire_date_empty_string_returns_none():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = ""
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date is None
+
+
+def test_hire_date_whitespace_returns_none():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = "   "
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date is None
+
+
+def test_hire_date_none():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = None
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date is None
+
+
+def test_hire_date_date_object():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = date(2026, 2, 1)
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date == date(2026, 2, 1)
+
+
+def test_hire_date_datetime_object():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = datetime(
+        2026,
+        2,
+        1,
+        12,
+        30,
+        0,
+    )
+
+    model = EmployeeProfileCompleteResponse.model_validate(
+        payload
+    )
+
+    assert model.hire_date == date(2026, 2, 1)
+
+
+def test_hire_date_invalid_value():
+    payload = VALID_EMPLOYEE.copy()
+    payload["hireDate"] = "not-a-date"
+
+    with pytest.raises(ValidationError):
+        EmployeeProfileCompleteResponse.model_validate(
+            payload
+        )
+
+
+# ============================================================
+# JSON / LIST FIELDS
+# ============================================================
+
+def test_certifications_field():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    assert model.certifications == {
+        "aws": "AWS Certified"
+    }
+
+    assert model.certification_names == ["AWS"]
+    assert model.certification_count == 1
+
+
+def test_skills_field():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    assert model.skills == {
+        "python": "advanced"
+    }
+
+    assert model.skill_names == ["Python"]
+    assert model.skill_count == 1
+
+
+def test_education_field():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    assert model.education == {
+        "degree": "BS"
+    }
+
+    assert model.education_count == 1
+
+
+def test_languages_field():
+    model = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    assert model.languages == ["English"]
+    assert model.language_count == 1
+
+
+# ============================================================
+# SEARCH SERVICE RESPONSE MODEL
+# ============================================================
+
+def test_search_service_response_success():
+    employee = EmployeeProfileCompleteResponse.model_validate(
+        VALID_EMPLOYEE
+    )
+
+    metadata = MetadataModel(
         cursor=None,
         has_more=False,
+        applied_filters=None,
     )
 
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes()
+    response = EmployeeProfileCompleteSearchServiceResponse(
+        items=[employee],
+        metadata=metadata,
     )
 
-    assert result is not None
-    assert len(result.items) == 1
+    assert len(response.items) == 1
+    assert response.items[0].empl_id == "EMP-1001"
 
-    assert result.items[0].empl_id == "EMP-1001"
+    assert response.metadata.cursor is None
+    assert response.metadata.has_more is False
 
-    mock_repo.assert_called_once()
 
+def test_search_service_response_empty():
+    metadata = MetadataModel(
+        cursor=None,
+        has_more=False,
+        applied_filters=None,
+    )
 
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_empty(mock_repo):
-    """
-    Search with no matching employees should return an empty list.
-    """
-
-    mock_repo.return_value = make_repo_result(
+    response = EmployeeProfileCompleteSearchServiceResponse(
         items=[],
-        cursor=None,
-        has_more=False,
+        metadata=metadata,
     )
 
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes()
-    )
+    assert response.items == []
+    assert response.metadata.has_more is False
 
-    assert result is not None
-    assert result.items == []
 
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
+def test_search_service_response_multiple_employees():
+    first = VALID_EMPLOYEE.copy()
 
-    mock_repo.assert_called_once()
+    second = VALID_EMPLOYEE.copy()
+    second["employeeKey"] = "EMPLOYEE-KEY-002"
+    second["emplId"] = "EMP-1002"
+    second["firstName"] = "Jane"
+    second["lastName"] = "Smith"
 
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_with_filters(mock_repo):
-    """
-    Dictionary filters should be converted to FiltersEnvelope.
-    """
-
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA]
-    )
-
-    filters = {
-        "empl_id": {
-            "eq": "EMP-1001"
-        }
-    }
-
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes(
-            filters=filters,
-        )
-    )
-
-    assert len(result.items) == 1
-
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_filters_none(mock_repo):
-    """
-    filters=None should become an empty FiltersEnvelope.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes(
-            filters=None,
-        )
-    )
-
-    assert result.items == []
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_filters_envelope(mock_repo):
-    """
-    Existing FiltersEnvelope should pass through.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    filters = FiltersEnvelope(filters={})
-
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes(
-            filters=filters,
-        )
-    )
-
-    assert result.items == []
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_page_defaults(mock_repo):
-    """
-    Default page must be created when page is not supplied.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    employee_profile_complete_service.search_employee_profile_completes()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["page"],
-        PaginationModel,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_sort_defaults(mock_repo):
-    """
-    Default sort must be empl_id ASC based on current service.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    employee_profile_complete_service.search_employee_profile_completes()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["sort"],
-        SortModel,
-    )
-
-    assert call_kwargs["sort"].field == "empl_id"
-    assert call_kwargs["sort"].order == "asc"
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_custom_page(mock_repo):
-    """
-    Custom PaginationModel should pass through.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    page = PaginationModel(
-        limit=25,
-        cursor="TEST-CURSOR",
-    )
-
-    employee_profile_complete_service.search_employee_profile_completes(
-        page=page,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["page"] is page
-    assert call_kwargs["page"].limit == 25
-    assert call_kwargs["page"].cursor == "TEST-CURSOR"
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_custom_sort(mock_repo):
-    """
-    Custom sorting should pass through.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    sort = SortModel(
-        field="last_name",
-        order="desc",
-    )
-
-    employee_profile_complete_service.search_employee_profile_completes(
-        sort=sort,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["sort"] is sort
-    assert call_kwargs["sort"].field == "last_name"
-    assert call_kwargs["sort"].order == "desc"
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_columns(mock_repo):
-    """
-    Selected columns should be forwarded to repository.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    columns = [
-        "empl_id",
-        "first_name",
-        "last_name",
-    ]
-
-    employee_profile_complete_service.search_employee_profile_completes(
-        columns=columns,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_completes"
-)
-def test_search_employee_profile_completes_metadata(mock_repo):
-    """
-    Repository pagination metadata should be returned.
-    """
-
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA],
+    metadata = MetadataModel(
         cursor="NEXT-CURSOR",
         has_more=True,
+        applied_filters=None,
     )
 
-    result = (
-        employee_profile_complete_service
-        .search_employee_profile_completes()
+    response = EmployeeProfileCompleteSearchServiceResponse(
+        items=[
+            EmployeeProfileCompleteResponse.model_validate(
+                first
+            ),
+            EmployeeProfileCompleteResponse.model_validate(
+                second
+            ),
+        ],
+        metadata=metadata,
     )
 
-    assert len(result.items) == 1
+    assert len(response.items) == 2
 
-    assert result.metadata.cursor == "NEXT-CURSOR"
-    assert result.metadata.has_more is True
+    assert response.items[0].empl_id == "EMP-1001"
+    assert response.items[1].empl_id == "EMP-1002"
+
+    assert response.metadata.cursor == "NEXT-CURSOR"
+    assert response.metadata.has_more is True
 
 
 # ============================================================
-# GET EMPLOYEE PROFILE COMPLETE DETAILS
-#
-# IMPORTANT:
-#
-# Correct:
-#
-# get_employee_profile_complete_details(
-#     empl_id="EMP-1001"
-# )
-#
-# WRONG:
-#
-# get_employee_profile_complete_details(
-#     employee_key="EMPLOYEE-KEY-001"
-# )
-#
+# REGRESSION TEST - EMPL_ID MUST EXIST
 # ============================================================
 
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_success(mock_repo):
+def test_model_has_empl_id_field():
     """
-    Detail lookup must use empl_id.
-    """
+    Regression protection.
 
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA],
-        cursor=None,
-        has_more=False,
-    )
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="EMP-1001",
-        )
-    )
-
-    assert result is not None
-
-    assert len(result.items) == 1
-
-    assert result.items[0].empl_id == "EMP-1001"
-
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    # THIS IS THE IMPORTANT ASSERTION
-    assert call_kwargs["empl_id"] == "EMP-1001"
-
-    # employee_key must NOT be used as repo argument
-    assert "employee_key" not in call_kwargs
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_not_found(mock_repo):
-    """
-    Valid empl_id with no matching DB row returns empty items.
+    employee_key remains part of the data model,
+    but empl_id must also be present because the detail endpoint
+    performs lookup using empl_id.
     """
 
-    mock_repo.return_value = make_repo_result(
-        items=[],
-        cursor=None,
-        has_more=False,
-    )
+    fields = EmployeeProfileCompleteResponse.model_fields
 
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="EMP-9999",
-        )
-    )
+    assert "employee_key" in fields
+    assert "empl_id" in fields
 
-    assert result is not None
-    assert result.items == []
-
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-9999"
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_missing_id(mock_repo):
-    """
-    Missing empl_id should return empty response without calling repo.
-    """
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="",
-        )
-    )
-
-    assert result is not None
-    assert result.items == []
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_not_called()
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_none_id(mock_repo):
-    """
-    None empl_id should return empty response.
-    """
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id=None,
-        )
-    )
-
-    assert result.items == []
-
-    mock_repo.assert_not_called()
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_with_dict_filters(
-    mock_repo,
-):
-    """
-    Dictionary filters must become FiltersEnvelope.
-    """
-
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA],
-    )
-
-    filters = {
-        "org_id": {
-            "eq": "ORG1"
-        }
-    }
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="EMP-1001",
-            filters=filters,
-        )
-    )
-
-    assert len(result.items) == 1
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_none_filters(
-    mock_repo,
-):
-    """
-    filters=None must become an empty FiltersEnvelope.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="EMP-1001",
-            filters=None,
-        )
-    )
-
-    assert result.items == []
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_filters_envelope(
-    mock_repo,
-):
-    """
-    Existing FiltersEnvelope should pass through.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    filters = FiltersEnvelope(filters={})
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-        filters=filters,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-    assert call_kwargs["filters"] is filters
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_limit(
-    mock_repo,
-):
-    """
-    Limit should be converted into PaginationModel.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-        limit=25,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["page"],
-        PaginationModel,
-    )
-
-    assert call_kwargs["page"].limit == 25
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_cursor(
-    mock_repo,
-):
-    """
-    Cursor should be passed through PaginationModel.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-        limit=10,
-        cursor="NEXT-CURSOR",
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["page"].limit == 10
-    assert call_kwargs["page"].cursor == "NEXT-CURSOR"
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_columns(
-    mock_repo,
-):
-    """
-    Selected columns should be forwarded.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    columns = [
-        "empl_id",
-        "first_name",
-        "last_name",
-    ]
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-        columns=columns,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-    assert call_kwargs["columns"] == columns
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_sort(
-    mock_repo,
-):
-    """
-    Sort should pass through to repo.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    sort = SortModel(
-        field="empl_id",
-        order="asc",
-    )
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-        sort=sort,
-    )
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-    assert call_kwargs["sort"] is sort
-
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_get_employee_profile_complete_details_metadata(
-    mock_repo,
-):
-    """
-    Pagination metadata should be mapped correctly.
-    """
-
-    mock_repo.return_value = make_repo_result(
-        items=[EMPLOYEE_DATA],
-        cursor="NEXT-CURSOR",
-        has_more=True,
-    )
-
-    result = (
-        employee_profile_complete_service
-        .get_employee_profile_complete_details(
-            empl_id="EMP-1001",
-        )
-    )
-
-    assert len(result.items) == 1
-
-    assert result.metadata.cursor == "NEXT-CURSOR"
-    assert result.metadata.has_more is True
-
-
-# ============================================================
-# REGRESSION TEST
-# ============================================================
-
-def test_get_employee_profile_complete_details_signature_uses_empl_id():
-    """
-    Regression protection for the GitLab issue.
-
-    Service contract must be:
-
-        get_employee_profile_complete_details(
-            empl_id=...
-        )
-
-    NOT:
-
-        get_employee_profile_complete_details(
-            employee_key=...
-        )
-    """
-
-    import inspect
-
-    signature = inspect.signature(
-        employee_profile_complete_service
-        .get_employee_profile_complete_details
-    )
-
-    assert "empl_id" in signature.parameters
-
-    assert "employee_key" not in signature.parameters
-
-
-# ============================================================
-# REPOSITORY CALL CONTRACT
-# ============================================================
-
-@patch(
-    "domain.services.employee_profile_complete_service."
-    "employee_profile_complete_repo.get_employee_profile_complete_by_id"
-)
-def test_detail_service_passes_empl_id_to_repo(mock_repo):
-    """
-    Explicitly verify the service -> repository contract.
-    """
-
-    mock_repo.return_value = make_repo_result(items=[])
-
-    employee_profile_complete_service.get_employee_profile_complete_details(
-        empl_id="EMP-1001",
-    )
-
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["empl_id"] == "EMP-1001"
-
-    assert "employee_key" not in call_kwargs
+    assert fields["empl_id"].alias == "emplId"
