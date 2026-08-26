@@ -1,269 +1,275 @@
-"""
-API Route Handlers for v1.
+from typing import List, Optional, Union
 
-Organized by functional domain.
-Importing these modules ensures they register their routes with the central router.
-"""
-
-from .agent import get_agent_contract_locations_v1
-
-from .auth import (
-    get_okta_login_url_v1,
-    handle_okta_login_callback_v1,
-    logout_handler_v1,
+from core import config
+from core.logging import logger
+from db.builders.base_builder import BaseRepositoryBuilder
+from db.builders.pypika_builder import QuerySpec, encode_cursor
+from db.connection import execute_query
+from v1.schemas import (
+    FilterGroup,
+    FilterOps,
+    FilterRule,
+    FiltersEnvelope,
+    PaginationModel,
+    SortModel,
 )
 
-from .contract_master import (
-    get_contract_master_v1,
-    list_contract_master_v1,
-    search_contract_master_v1,
+
+AGENT_GET_CONTRACT_LOCATIONS_SPEC = QuerySpec(
+    table="gold_work_locations_vw",
+    columns_map={
+        "award_number": {"col": "AWARD_NUMBER", "type": "text"},
+        "order_number": {"col": "ORDER_NUMBER", "type": "text"},
+        "contract_id": {"col": "CONTRACT_ID", "type": "text"},
+        "task_number": {"col": "TASK_NUMBER", "type": "text"},
+        "places": {"col": "PLACES", "type": "text"},
+        "project_name": {"col": "PROJECT_NAME", "type": "text"},
+        "program_manager_name": {
+            "col": "PROGRAM_MANAGER_NAME",
+            "type": "text",
+        },
+        "status": {"col": "STATUS", "type": "text"},
+    },
+    logical_id_field="contract_id",
+    allowed_sort_fields={
+        "contract_id",
+        "award_number",
+        "order_number",
+        "project_name",
+        "status",
+    },
+    default_select=[
+        "contract_id",
+        "award_number",
+        "order_number",
+        "places",
+        "project_name",
+        "program_manager_name",
+        "status",
+    ],
 )
 
-from .contract_program_manager import (
-    get_contract_program_managers_v1,
-    search_contract_program_managers_v1,
-)
 
-from .contract_analysis import (
-    get_contract_analysis_v1,
-    search_contract_analysis_v1,
-)
+# Initialize the builder for this repository
+_builder = BaseRepositoryBuilder(AGENT_GET_CONTRACT_LOCATIONS_SPEC)
 
-from .clm_tcv import (
-    get_clm_contract_v1,
-    list_clm_contracts_v1,
-    search_clm_contracts_v1,
-)
 
-from .employee_profile_complete import (
-    get_employee_profile_complete_v1,
-    list_employee_profile_completes_v1,
-    search_employee_profile_completes_v1,
-)
+###############################################################################
+# Helpers
+###############################################################################
 
-from .contracts import (
-    get_contract_v1,
-    list_contracts_v1,
-    search_contracts_v1,
-)
 
-from .employees import (
-    get_certifications_by_org_blank_v1,
-    get_certifications_by_org_v1,
-    get_certifications_by_status_blank_v1,
-    get_certifications_by_status_v1,
-    get_employee_certifications_blank_v1,
-    get_employee_certifications_v1,
-    get_employee_direct_reports_blank_v1,
-    get_employee_direct_reports_v1,
-    get_employee_profile_blank_v1,
-    get_employee_profile_v1,
-    get_employee_training_blank_v1,
-    get_employee_training_v1,
-    get_employees_by_clearance_blank_v1,
-    get_employees_by_clearance_v1,
-    get_employees_by_org_v1,
-    get_org_blank_v1,
-    get_personnel_roster_v1,
-    get_training_by_org_blank_v1,
-    get_training_by_org_v1,
-    get_training_by_status_blank_v1,
-    get_training_by_status_v1,
-    get_training_by_type_blank_v1,
-    get_training_by_type_v1,
-    search_employee_certifications_v1,
-    search_employee_profiles_v1,
-    search_employee_training_v1,
-)
+def _format_paginated_response(
+    items: list,
+    limit: int,
+) -> dict:
+    """
+    Helper to process DB results into a standardized response envelope.
 
-from .project_financial import (
-    get_project_financial_v1,
-    list_project_financials_v1,
-    search_project_financials_v1,
-)
+    The query may return limit + 1 rows so we can determine whether another
+    page exists. The extra row is removed before returning the response.
+    """
+    has_more = len(items) > limit
 
-from .contract_modifications import (
-    get_contract_modifications_v1,
-    search_contract_modifications_v1,
-)
+    next_cursor = None
 
-from .health import handle as handle_health
-from .health import handle_deep_health
+    if has_more:
+        items = items[:limit]
 
-from .projects import get_project_status_v1
+        next_cursor = encode_cursor(
+            items[-1].get(
+                AGENT_GET_CONTRACT_LOCATIONS_SPEC.logical_id_field
+            )
+        )
 
-from .project_forecasts import search_project_forecasts_v1
+    # Remove internal/hidden count field before returning to API consumer.
+    for item in items:
+        item.pop("total_count_hidden", None)
 
-from .project_master import (
-    get_project_master_v1,
-    list_project_master_v1,
-    search_project_master_v1,
-)
+    return {
+        "items": items,
+        "page": {
+            "cursor": next_cursor,
+            "has_more": has_more,
+        },
+    }
 
-from .ar_history import (
-    get_ar_history_v1,
-    search_ar_history_v1,
-)
 
-from .unburdened_nonlabor import (
-    get_unburdened_nonlabor_v1,
-    search_unburdened_nonlabor_v1,
-)
+def _normalize_filters(
+    filters: Optional[
+        Union[
+            FiltersEnvelope,
+            FilterGroup,
+            dict,
+        ]
+    ],
+    field_name: str,
+    field_value: str,
+) -> FiltersEnvelope:
+    """
+    Normalize the supported filter shapes into FiltersEnvelope and inject
+    the required equality filter.
 
-from .timesheet_history import (
-    get_timesheet_history_by_employee_v1,
-    get_timesheet_history_by_project_v1,
-    search_timesheet_history_v1,
-)
+    Supported inputs:
+        * None
+        * dict
+        * FilterGroup
+        * FiltersEnvelope
 
-from .voucher_history import (
-    get_voucher_history_v1,
-    search_voucher_history_v1,
-)
+    Existing filters are preserved.
+    """
 
-from .po_funding_detail import (
-    get_po_funding_detail_v1,
-    search_po_funding_detail_v1,
-)
+    # ------------------------------------------------------------------
+    # Existing FiltersEnvelope
+    # ------------------------------------------------------------------
+    if isinstance(filters, FiltersEnvelope):
+        current_data = filters.filters
 
-from .real_time_commitment import (
-    get_real_time_commitments_v1,
-    search_real_time_commitments_v1,
-)
+    # ------------------------------------------------------------------
+    # Direct FilterGroup
+    # ------------------------------------------------------------------
+    elif isinstance(filters, FilterGroup):
+        current_data = filters
 
-from .gl_details import (
-    get_gl_details_v1,
-    search_gl_details_v1,
-)
+    # ------------------------------------------------------------------
+    # Dictionary or None
+    # ------------------------------------------------------------------
+    else:
+        current_data = filters or {}
 
-from .non_labor_detail import (
-    get_non_labor_detail_v1,
-    search_non_labor_detail_v1,
-)
+    # ------------------------------------------------------------------
+    # Dictionary-style filters
+    #
+    # Example:
+    # {
+    #     "proj_name": FilterOps(eq="Test Project")
+    # }
+    # ------------------------------------------------------------------
+    if isinstance(current_data, dict):
+        current_data[field_name] = FilterOps(eq=field_value)
 
-from .financials_updated import (
-    get_financials_updated_v1,
-    search_financials_updated_v1,
-)
+    # ------------------------------------------------------------------
+    # Recursive FilterGroup-style filters
+    # ------------------------------------------------------------------
+    elif isinstance(current_data, FilterGroup):
+        id_rule = FilterRule(
+            field=field_name,
+            ops=FilterOps(eq=field_value),
+        )
 
-from .po_open_commitment import (
-    get_po_open_commitments_v1,
-    search_po_open_commitments_v1,
-)
+        current_data.filters.append(id_rule)
 
-from .period_target_cost_revenue import (
-    get_period_target_cost_revenue_v1,
-    search_period_target_cost_revenue_v1,
-)
+    # ------------------------------------------------------------------
+    # Convert final structure into FiltersEnvelope
+    # ------------------------------------------------------------------
+    return FiltersEnvelope(filters=current_data)
 
-from .project_status_report import (
-    get_project_status_history_v1,
-    search_project_status_history_v1,
-)
 
-from .project_modifications import (
-    get_project_modifications_v1,
-    search_project_modifications_v1,
-)
+###############################################################################
+# Repository functions
+###############################################################################
 
-from .project_info import (
-    get_project_info_v1,
-    search_project_info_v1,
-)
 
-from .project_status_detail import (
-    get_project_status_detail_v1,
-    search_project_status_detail_v1,
-)
+def get_work_locations_by_contract_id(
+    contract_id: str,
+    filters: Optional[
+        Union[
+            FiltersEnvelope,
+            FilterGroup,
+            dict,
+        ]
+    ] = None,
+    page: Optional[PaginationModel] = None,
+    columns: Optional[List[str]] = None,
+    sort: Optional[SortModel] = None,
+) -> dict:
+    """
+    Fetch records for a specific contract_id.
 
-__all__ = [
-    "logout_handler_v1",
-    "get_okta_login_url_v1",
-    "handle_okta_login_callback_v1",
-    "get_contract_v1",
-    "search_contracts_v1",
-    "list_contracts_v1",
-    "search_employee_profiles_v1",
-    "get_employee_direct_reports_blank_v1",
-    "get_employee_direct_reports_v1",
-    "get_org_blank_v1",
-    "get_employees_by_org_v1",
-    "get_personnel_roster_v1",
-    "get_employees_by_clearance_blank_v1",
-    "get_employees_by_clearance_v1",
-    "get_employee_profile_blank_v1",
-    "get_employee_profile_v1",
-    "search_employee_training_v1",
-    "get_training_by_status_blank_v1",
-    "get_training_by_status_v1",
-    "get_training_by_org_blank_v1",
-    "get_training_by_org_v1",
-    "get_training_by_type_blank_v1",
-    "get_training_by_type_v1",
-    "get_employee_training_blank_v1",
-    "get_employee_training_v1",
-    "search_employee_certifications_v1",
-    "get_employee_certifications_blank_v1",
-    "get_employee_certifications_v1",
-    "get_certifications_by_status_blank_v1",
-    "get_certifications_by_status_v1",
-    "get_certifications_by_org_blank_v1",
-    "get_certifications_by_org_v1",
-    "get_project_status_v1",
-    "handle_health",
-    "handle_deep_health",
-    "get_agent_contract_locations_v1",
-    "search_project_forecasts_v1",
-    "get_project_financial_v1",
-    "search_project_financials_v1",
-    "list_project_financials_v1",
-    "get_project_master_v1",
-    "search_project_master_v1",
-    "list_project_master_v1",
-    "get_contract_master_v1",
-    "search_contract_master_v1",
-    "list_contract_master_v1",
-    "get_contract_modifications_v1",
-    "search_contract_modifications_v1",
-    "get_contract_program_managers_v1",
-    "search_contract_program_managers_v1",
-    "get_contract_analysis_v1",
-    "search_contract_analysis_v1",
-    "get_clm_contract_v1",
-    "search_clm_contracts_v1",
-    "list_clm_contracts_v1",
-    "get_ar_history_v1",
-    "search_ar_history_v1",
-    "get_unburdened_nonlabor_v1",
-    "search_unburdened_nonlabor_v1",
-    "get_timesheet_history_by_employee_v1",
-    "get_timesheet_history_by_project_v1",
-    "search_timesheet_history_v1",
-    "get_voucher_history_v1",
-    "search_voucher_history_v1",
-    "get_po_funding_detail_v1",
-    "search_po_funding_detail_v1",
-    "get_real_time_commitments_v1",
-    "search_real_time_commitments_v1",
-    "get_gl_details_v1",
-    "search_gl_details_v1",
-    "get_non_labor_detail_v1",
-    "search_non_labor_detail_v1",
-    "get_financials_updated_v1",
-    "search_financials_updated_v1",
-    "get_po_open_commitments_v1",
-    "search_po_open_commitments_v1",
-    "get_period_target_cost_revenue_v1",
-    "search_period_target_cost_revenue_v1",
-    "get_project_status_history_v1",
-    "search_project_status_history_v1",
-    "get_project_modifications_v1",
-    "search_project_modifications_v1",
-    "get_project_info_v1",
-    "search_project_info_v1",
-    "get_project_status_detail_v1",
-    "search_project_status_detail_v1",
-    "get_employee_profile_complete_v1",
-    "search_employee_profile_completes_v1",
-    "list_employee_profile_completes_v1",
-]
+    Ensures the required contract_id equality filter is injected into the
+    supplied filter structure while preserving any existing filters.
+    """
+
+    validated_filters = _normalize_filters(
+        filters=filters,
+        field_name="contract_id",
+        field_value=contract_id,
+    )
+
+    current_page = page or PaginationModel(limit=50)
+    current_sort = sort or SortModel()
+
+    plan = _builder.get_list_plan(
+        filters=validated_filters,
+        sort=current_sort,
+        page=current_page,
+        columns=columns,
+    )
+
+    # IMPORTANT:
+    # execute_query needs the requested limit. The unit tests specifically
+    # verify this argument.
+    raw_results = execute_query(
+        plan.sql,
+        plan.params,
+        limit=current_page.limit,
+    )
+
+    items = raw_results.get("items", [])
+
+    return _format_paginated_response(
+        items,
+        current_page.limit,
+    )
+
+
+def get_work_locations_by_contract_id_by_id(
+    proj_id: str,
+    filters: Optional[
+        Union[
+            FiltersEnvelope,
+            FilterGroup,
+            dict,
+        ]
+    ] = None,
+    page: Optional[PaginationModel] = None,
+    columns: Optional[List[str]] = None,
+    sort: Optional[SortModel] = None,
+) -> dict:
+    """
+    Fetch work-location records for a specific project ID.
+
+    The function name follows the existing API/repository naming convention,
+    while the actual lookup field required by this endpoint is ``proj_id``.
+
+    Existing filters are preserved and the required proj_id equality
+    condition is added.
+    """
+
+    validated_filters = _normalize_filters(
+        filters=filters,
+        field_name="proj_id",
+        field_value=proj_id,
+    )
+
+    current_page = page or PaginationModel(limit=50)
+    current_sort = sort or SortModel()
+
+    plan = _builder.get_list_plan(
+        filters=validated_filters,
+        sort=current_sort,
+        page=current_page,
+        columns=columns,
+    )
+
+    raw_results = execute_query(
+        plan.sql,
+        plan.params,
+    )
+
+    items = raw_results.get("items", [])
+
+    return _format_paginated_response(
+        items,
+        current_page.limit,
+    )
