@@ -1,10 +1,6 @@
-from typing import List, Optional, Union
+from unittest.mock import MagicMock, patch
 
-from core import config
-from core.logging import logger
-from db.builders.base_builder import BaseRepositoryBuilder
-from db.builders.pypika_builder import QuerySpec, encode_cursor
-from db.connection import execute_query
+from db.repositories import agent_repo
 from v1.schemas import (
     FilterGroup,
     FilterOps,
@@ -15,261 +11,433 @@ from v1.schemas import (
 )
 
 
-AGENT_GET_CONTRACT_LOCATIONS_SPEC = QuerySpec(
-    table="gold_work_locations_vw",
-    columns_map={
-        "award_number": {"col": "AWARD_NUMBER", "type": "text"},
-        "order_number": {"col": "ORDER_NUMBER", "type": "text"},
-        "contract_id": {"col": "CONTRACT_ID", "type": "text"},
-        "task_number": {"col": "TASK_NUMBER", "type": "text"},
-        "places": {"col": "PLACES", "type": "text"},
-        "project_name": {"col": "PROJECT_NAME", "type": "text"},
-        "program_manager_name": {
-            "col": "PROGRAM_MANAGER_NAME",
-            "type": "text",
+# =============================================================================
+# _format_paginated_response TESTS
+# =============================================================================
+
+
+def test_format_paginated_response_has_more():
+    items = [
+        {"proj_id": "C-1001"},
+        {"proj_id": "P-1001"},
+        {"proj_id": "P-1002"},
+    ]
+
+    result = agent_repo._format_paginated_response(
+        items,
+        limit=2,
+    )
+
+    assert result["page"]["has_more"] is True
+    assert result["page"]["cursor"] is not None
+    assert len(result["items"]) == 2
+    assert result["items"][0]["proj_id"] == "C-1001"
+    assert result["items"][1]["proj_id"] == "P-1001"
+
+
+def test_format_paginated_response_no_more():
+    items = [
+        {"proj_id": "C-1001"},
+        {"proj_id": "P-1002"},
+    ]
+
+    result = agent_repo._format_paginated_response(
+        items,
+        limit=10,
+    )
+
+    assert result["page"]["has_more"] is False
+    assert result["page"]["cursor"] is None
+    assert len(result["items"]) == 2
+
+
+def test_format_paginated_response_removes_hidden_count():
+    items = [
+        {
+            "proj_id": "C-1001",
+            "total_count_hidden": 10,
         },
-        "status": {"col": "STATUS", "type": "text"},
-    },
-    logical_id_field="contract_id",
-    allowed_sort_fields={
-        "contract_id",
-        "award_number",
-        "order_number",
-        "project_name",
-        "status",
-    },
-    default_select=[
-        "contract_id",
-        "award_number",
-        "order_number",
-        "places",
-        "project_name",
-        "program_manager_name",
-        "status",
-    ],
-)
-
-
-# Initialize the builder for this repository
-_builder = BaseRepositoryBuilder(AGENT_GET_CONTRACT_LOCATIONS_SPEC)
-
-
-###############################################################################
-# Helpers
-###############################################################################
-
-
-def _format_paginated_response(
-    items: list,
-    limit: int,
-) -> dict:
-    """
-    Helper to process DB results into a standardized response envelope.
-
-    The query may return limit + 1 rows so we can determine whether another
-    page exists. The extra row is removed before returning the response.
-    """
-    has_more = len(items) > limit
-
-    next_cursor = None
-
-    if has_more:
-        items = items[:limit]
-
-        next_cursor = encode_cursor(
-            items[-1].get(
-                AGENT_GET_CONTRACT_LOCATIONS_SPEC.logical_id_field
-            )
-        )
-
-    # Remove internal/hidden count field before returning to API consumer.
-    for item in items:
-        item.pop("total_count_hidden", None)
-
-    return {
-        "items": items,
-        "page": {
-            "cursor": next_cursor,
-            "has_more": has_more,
+        {
+            "proj_id": "P-1002",
+            "total_count_hidden": 10,
         },
+    ]
+
+    result = agent_repo._format_paginated_response(
+        items,
+        limit=10,
+    )
+
+    assert "total_count_hidden" not in result["items"][0]
+    assert "total_count_hidden" not in result["items"][1]
+
+
+# =============================================================================
+# get_work_locations_by_contract_id TESTS
+# =============================================================================
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_success(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "cust_name": "Test Customer",
+                "proj_name": "Test Project",
+            }
+        ]
     }
 
+    filters = FiltersEnvelope(filters={})
+    sort = SortModel()
+    page = PaginationModel(limit=10)
 
-def _normalize_filters(
-    filters: Optional[
-        Union[
-            FiltersEnvelope,
-            FilterGroup,
-            dict,
-        ]
-    ],
-    field_name: str,
-    field_value: str,
-) -> FiltersEnvelope:
-    """
-    Normalize the supported filter shapes into FiltersEnvelope and inject
-    the required equality filter.
-
-    Supported inputs:
-        * None
-        * dict
-        * FilterGroup
-        * FiltersEnvelope
-
-    Existing filters are preserved.
-    """
-
-    # ------------------------------------------------------------------
-    # Existing FiltersEnvelope
-    # ------------------------------------------------------------------
-    if isinstance(filters, FiltersEnvelope):
-        current_data = filters.filters
-
-    # ------------------------------------------------------------------
-    # Direct FilterGroup
-    # ------------------------------------------------------------------
-    elif isinstance(filters, FilterGroup):
-        current_data = filters
-
-    # ------------------------------------------------------------------
-    # Dictionary or None
-    # ------------------------------------------------------------------
-    else:
-        current_data = filters or {}
-
-    # ------------------------------------------------------------------
-    # Dictionary-style filters
-    #
-    # Example:
-    # {
-    #     "proj_name": FilterOps(eq="Test Project")
-    # }
-    # ------------------------------------------------------------------
-    if isinstance(current_data, dict):
-        current_data[field_name] = FilterOps(eq=field_value)
-
-    # ------------------------------------------------------------------
-    # Recursive FilterGroup-style filters
-    # ------------------------------------------------------------------
-    elif isinstance(current_data, FilterGroup):
-        id_rule = FilterRule(
-            field=field_name,
-            ops=FilterOps(eq=field_value),
-        )
-
-        current_data.filters.append(id_rule)
-
-    # ------------------------------------------------------------------
-    # Convert final structure into FiltersEnvelope
-    # ------------------------------------------------------------------
-    return FiltersEnvelope(filters=current_data)
-
-
-###############################################################################
-# Repository functions
-###############################################################################
-
-
-def get_work_locations_by_contract_id(
-    contract_id: str,
-    filters: Optional[
-        Union[
-            FiltersEnvelope,
-            FilterGroup,
-            dict,
-        ]
-    ] = None,
-    page: Optional[PaginationModel] = None,
-    columns: Optional[List[str]] = None,
-    sort: Optional[SortModel] = None,
-) -> dict:
-    """
-    Fetch records for a specific contract_id.
-
-    Ensures the required contract_id equality filter is injected into the
-    supplied filter structure while preserving any existing filters.
-    """
-
-    validated_filters = _normalize_filters(
+    result = agent_repo.get_work_locations_by_contract_id(
+        contract_id="C-1001",
         filters=filters,
-        field_name="contract_id",
-        field_value=contract_id,
+        sort=sort,
+        page=page,
     )
 
-    current_page = page or PaginationModel(limit=50)
-    current_sort = sort or SortModel()
+    mock_get_list_plan.assert_called_once_with(
+        filters=filters,
+        sort=sort,
+        page=page,
+        columns=None,
+    )
 
-    plan = _builder.get_list_plan(
-        filters=validated_filters,
-        sort=current_sort,
-        page=current_page,
+    mock_execute_query.assert_called_once_with(
+        plan.sql,
+        plan.params,
+        limit=10,
+    )
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["proj_id"] == "C-1001"
+    assert result["items"][0]["proj_name"] == "Test Project"
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_with_custom_columns(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT proj_id, proj_name FROM agent_source_vw"
+    plan.params = {}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "proj_name": "Test Project",
+            }
+        ]
+    }
+
+    columns = ["proj_id", "proj_name"]
+
+    result = agent_repo.get_work_locations_by_contract_id(
+        contract_id="C-1001",
+        filters=FiltersEnvelope(filters={}),
+        sort=SortModel(),
+        page=PaginationModel(limit=10),
         columns=columns,
     )
 
-    # IMPORTANT:
-    # execute_query needs the requested limit. The unit tests specifically
-    # verify this argument.
-    raw_results = execute_query(
-        plan.sql,
-        plan.params,
-        limit=current_page.limit,
-    )
+    mock_get_list_plan.assert_called_once()
 
-    items = raw_results.get("items", [])
+    call_kwargs = mock_get_list_plan.call_args.kwargs
 
-    return _format_paginated_response(
-        items,
-        current_page.limit,
-    )
+    assert call_kwargs["columns"] == columns
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["proj_id"] == "C-1001"
 
 
-def get_work_locations_by_contract_id_by_id(
-    proj_id: str,
-    filters: Optional[
-        Union[
-            FiltersEnvelope,
-            FilterGroup,
-            dict,
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_with_dict_filters(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {"p0": "C-1001"}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "proj_name": "Test Project",
+            }
         ]
-    ] = None,
-    page: Optional[PaginationModel] = None,
-    columns: Optional[List[str]] = None,
-    sort: Optional[SortModel] = None,
-) -> dict:
-    """
-    Fetch work-location records for a specific project ID.
+    }
 
-    The function name follows the existing API/repository naming convention,
-    while the actual lookup field required by this endpoint is ``proj_id``.
-
-    Existing filters are preserved and the required proj_id equality
-    condition is added.
-    """
-
-    validated_filters = _normalize_filters(
-        filters=filters,
-        field_name="proj_id",
-        field_value=proj_id,
+    result = agent_repo.get_work_locations_by_contract_id(
+        contract_id="C-1001",
+        filters={
+            "proj_id": FilterOps(eq="C-1001"),
+        },
+        sort=SortModel(),
+        page=PaginationModel(limit=10),
     )
 
-    current_page = page or PaginationModel(limit=50)
-    current_sort = sort or SortModel()
+    mock_get_list_plan.assert_called_once()
 
-    plan = _builder.get_list_plan(
-        filters=validated_filters,
-        sort=current_sort,
-        page=current_page,
-        columns=columns,
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
     )
 
-    raw_results = execute_query(
+    assert len(result["items"]) == 1
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_with_none_defaults(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": []
+    }
+
+    result = agent_repo.get_work_locations_by_contract_id(
+        contract_id="C-1001",
+        filters=None,
+        sort=None,
+        page=None,
+    )
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+    assert isinstance(
+        call_kwargs["sort"],
+        SortModel,
+    )
+
+    assert isinstance(
+        call_kwargs["page"],
+        PaginationModel,
+    )
+
+    assert result["items"] == []
+    assert result["page"]["has_more"] is False
+
+
+# =============================================================================
+# get_work_locations_by_contract_id_by_id TESTS
+# =============================================================================
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_by_id_found(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {"p0": "C-1001"}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "proj_name": "Test Project",
+            }
+        ]
+    }
+
+    result = agent_repo.get_work_locations_by_contract_id_by_id(
+        proj_id="C-1001",
+    )
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["proj_id"] == "C-1001"
+
+    mock_get_list_plan.assert_called_once()
+
+    mock_execute_query.assert_called_once_with(
         plan.sql,
         plan.params,
     )
 
-    items = raw_results.get("items", [])
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+    validated_filters = call_kwargs["filters"]
 
-    return _format_paginated_response(
-        items,
-        current_page.limit,
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
     )
+
+    assert validated_filters.filters["proj_id"].eq == "C-1001"
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_by_id_not_found(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {"p0": "NONEXISTENT"}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": []
+    }
+
+    result = agent_repo.get_work_locations_by_contract_id_by_id(
+        proj_id="NONEXISTENT",
+    )
+
+    assert result["items"] == []
+    assert result["page"]["has_more"] is False
+    assert result["page"]["cursor"] is None
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_by_id_with_filter_group(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "proj_name": "Test Project",
+            }
+        ]
+    }
+
+    filter_group = FilterGroup(
+        filters=[
+            FilterRule(
+                field="proj_name",
+                ops=FilterOps(
+                    like="%Test%",
+                ),
+            )
+        ]
+    )
+
+    result = agent_repo.get_work_locations_by_contract_id_by_id(
+        proj_id="C-1001",
+        filters=filter_group,
+    )
+
+    assert len(result["items"]) == 1
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+    validated_filters = call_kwargs["filters"]
+
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
+    )
+
+    assert isinstance(
+        validated_filters.filters,
+        FilterGroup,
+    )
+
+    project_id_rules = [
+        rule
+        for rule in validated_filters.filters.filters
+        if rule.field == "proj_id"
+    ]
+
+    assert len(project_id_rules) == 1
+    assert project_id_rules[0].ops.eq == "C-1001"
+
+
+@patch("db.repositories.agent_repo.execute_query")
+@patch("db.repositories.agent_repo._builder.get_list_plan")
+def test_get_work_locations_by_contract_id_by_id_with_existing_envelope(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    plan = MagicMock()
+    plan.sql = "SELECT * FROM agent_source_vw"
+    plan.params = {}
+
+    mock_get_list_plan.return_value = plan
+
+    mock_execute_query.return_value = {
+        "items": [
+            {
+                "proj_id": "C-1001",
+                "proj_name": "Test Project",
+            }
+        ]
+    }
+
+    filters = FiltersEnvelope(
+        filters={
+            "proj_name": FilterOps(
+                eq="Test Project",
+            )
+        }
+    )
+
+    result = agent_repo.get_work_locations_by_contract_id_by_id(
+        proj_id="C-1001",
+        filters=filters,
+    )
+
+    assert len(result["items"]) == 1
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+    validated_filters = call_kwargs["filters"]
+
+    assert validated_filters.filters["proj_id"].eq == "C-1001"
+    assert (
+        validated_filters.filters["proj_name"].eq
+        == "Test Project"
+    )
+
+
+
+py -m pytest main-function\tests\unit\db\test_agent_repo.py -v --cov=db.repositories.agent_repo --cov-report=term-missing
