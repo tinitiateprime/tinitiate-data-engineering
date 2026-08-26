@@ -1,838 +1,583 @@
-import json
+"""
+Unit tests for db.repositories.employee_profile_complete_repo.
+
+IMPORTANT:
+The employee lookup key for get_employee_profile_complete_by_id()
+is empl_id, NOT employee_key.
+"""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from v1.handlers import agent
-from v1.schemas import FilterOps, FiltersEnvelope
+from db.repositories import employee_profile_complete_repo
+from v1.schemas import (
+    FilterOps,
+    FilterRule,
+    FiltersEnvelope,
+    PaginationModel,
+    SortModel,
+)
 
 
-# =============================================================================
-# Test data
-# =============================================================================
+# ============================================================
+# Helpers
+# ============================================================
 
-
-AGENT_ITEM = {
-    "contract_id": "CONT-1001",
-    "award_number": "AWD-1001",
-    "order_number": "ORD-1001",
-    "mod_number": "MOD-01",
-    "places": "Dallas, TX",
-    "project_name": "Test Project",
-    "program_manager_name": "Test Manager",
-    "status": "ACTIVE",
-}
-
-
-# =============================================================================
-# Test helpers
-# =============================================================================
-
-
-class MockMetadata:
-    """
-    Lightweight metadata object used by the mocked service response.
-    """
-
-    def __init__(
-        self,
-        cursor=None,
-        has_more=False,
-        applied_filters=None,
-    ):
-        self.cursor = cursor
-        self.has_more = has_more
-        self.applied_filters = applied_filters
-
-    def model_dump(self):
-        return {
-            "cursor": self.cursor,
-            "has_more": self.has_more,
-            "applied_filters": self.applied_filters,
-        }
-
-
-class MockServiceResponse:
-    """
-    Lightweight replacement for the response returned by
-    agent_get_contract_locations().
-    """
-
-    def __init__(
-        self,
-        items=None,
-        cursor=None,
-        has_more=False,
-        applied_filters=None,
-    ):
-        self.items = items if items is not None else []
-
-        self.metadata = MockMetadata(
-            cursor=cursor,
-            has_more=has_more,
-            applied_filters=applied_filters,
-        )
-
-
-def build_event(
-    contract_id="CONT-1001",
-    query_params=None,
-):
-    """
-    Build an API Gateway event for the Agent contract-location endpoint.
-    """
-
-    path_parameters = {}
-
-    if contract_id is not None:
-        path_parameters["contractId"] = contract_id
-
+def _make_query_result(items=None):
     return {
-        "httpMethod": "GET",
-        "path": (
-            f"/v1/agent/work_locations_vw/{contract_id}"
-            if contract_id
-            else "/v1/agent/work_locations_vw/"
-        ),
-        "resource": "/v1/agent/work_locations_vw/{contractId}",
-        "headers": {
-            "Content-Type": "application/json",
-        },
-        "queryStringParameters": query_params,
-        "pathParameters": path_parameters,
-        "requestContext": {
-            "requestId": "unit-test-request-id",
-            "stage": "test",
-            "httpMethod": "GET",
-            "resourcePath": (
-                "/v1/agent/work_locations_vw/{contractId}"
-            ),
-        },
-        "body": None,
-        "isBase64Encoded": False,
+        "items": items or []
     }
 
 
-def get_response_body(response):
-    """
-    Safely deserialize Lambda response body.
-    """
-
-    body = response.get("body")
-
-    if isinstance(body, str):
-        return json.loads(body)
-
-    return body
-
-
-def build_filters():
-    """
-    Return a real FiltersEnvelope.
-
-    V1MetadataModel requires applied_filters to be an actual
-    FiltersEnvelope or valid dictionary. Using MagicMock here causes
-    Pydantic validation failures.
-    """
-
-    return FiltersEnvelope(
-        filters={
-            "status": FilterOps(
-                eq="ACTIVE",
-            )
-        }
-    )
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
-
-
-@pytest.fixture
-def mock_context():
-    """
-    Create a mock AWS Lambda context.
-    """
-
-    context = MagicMock()
-
-    context.function_name = "agent-unit-test"
-    context.aws_request_id = "unit-test-request-id"
-    context.memory_limit_in_mb = 128
-    context.get_remaining_time_in_millis.return_value = 30000
-
-    return context
-
-
-# =============================================================================
-# Successful request
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_success(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "10",
-        "cursor": "next-token",
+def _sample_employee():
+    return {
+        "employee_key": "EMPLOYEE-KEY-001",
+        "email_key": "test_email_key",
+        "empl_id": "EMP-1001",
+        "my_id": "test_my_id",
+        "sotv_employee_id": "test_sotv_employee_id",
+        "first_name": "John",
+        "last_name": "Doe",
+        "mid_name": "A",
+        "employee_name": "Doe, John",
+        "job_title": "Engineer",
+        "org_id": "ORG1",
+        "dept_name": "Engineering",
+        "location": "New York",
+        "mgr_name": "Jane Doe",
+        "mgr_empl_id": "EMP-2001",
+        "hire_date": "2026-01-01",
+        "clearance_status": "ACTIVE",
+        "clearance_eligibility": "SECRET",
+        "sotv_headline": "Engineer",
+        "certifications": {},
+        "certification_names": [],
+        "certification_count": 0,
+        "skills": {},
+        "skill_names": [],
+        "skill_count": 0,
+        "education": {},
+        "education_count": 0,
+        "languages": [],
+        "language_count": 0,
     }
 
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = None
 
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-        cursor="next-token",
-        has_more=True,
-    )
+# ============================================================
+# QuerySpec tests
+# ============================================================
 
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "10",
-            "cursor": "next-token",
-        },
-    )
+def test_employee_profile_complete_view_spec():
+    spec = employee_profile_complete_repo.EMPLOYEEPROFILECOMPLETE_VIEW_SPEC
 
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
+    assert spec.table == "gold.employee_profile_complete_vw"
 
-    assert response is not None
-    assert isinstance(response, dict)
-    assert response["statusCode"] == 200
-    assert "body" in response
+    # Pagination can continue to use employee_key.
+    # This is separate from the employee lookup parameter.
+    assert spec.logical_id_field == "employee_key"
 
-    body = get_response_body(response)
+    # But empl_id must exist as a real queryable column.
+    assert "empl_id" in spec.column_map
+    assert spec.column_map["empl_id"]["col"] == "empl_id"
 
-    assert body is not None
+    assert "empl_id" in spec.allowed_sort_fields
+    assert "empl_id" in spec.default_select
 
-    mock_service.assert_called_once_with(
-        contract_id="CONT-1001",
-        filters=None,
+
+# ============================================================
+# _format_paginated_response
+# ============================================================
+
+def test_format_paginated_response_empty():
+    result = employee_profile_complete_repo._format_paginated_response(
+        items=[],
         limit=10,
-        cursor="next-token",
+    )
+
+    assert result["items"] == []
+    assert result["page"]["cursor"] is None
+    assert result["page"]["has_more"] is False
+
+
+def test_format_paginated_response_under_limit():
+    items = [_sample_employee()]
+
+    result = employee_profile_complete_repo._format_paginated_response(
+        items=items,
+        limit=10,
+    )
+
+    assert len(result["items"]) == 1
+    assert result["page"]["cursor"] is None
+    assert result["page"]["has_more"] is False
+
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.encode_cursor"
+)
+def test_format_paginated_response_has_more(mock_encode_cursor):
+    mock_encode_cursor.return_value = "NEXT-CURSOR"
+
+    items = []
+
+    for i in range(11):
+        item = _sample_employee()
+        item["employee_key"] = f"KEY-{i}"
+        item["empl_id"] = f"EMP-{i}"
+        items.append(item)
+
+    result = employee_profile_complete_repo._format_paginated_response(
+        items=items,
+        limit=10,
+    )
+
+    assert len(result["items"]) == 10
+    assert result["page"]["has_more"] is True
+    assert result["page"]["cursor"] == "NEXT-CURSOR"
+
+    # Cursor still uses employee_key because logical_id_field is
+    # employee_key in the repository QuerySpec.
+    mock_encode_cursor.assert_called_once_with("KEY-9")
+
+
+def test_format_paginated_response_removes_hidden_count():
+    item = _sample_employee()
+    item["total_count_hidden"] = 99
+
+    result = employee_profile_complete_repo._format_paginated_response(
+        items=[item],
+        limit=10,
+    )
+
+    assert "total_count_hidden" not in result["items"][0]
+
+
+# ============================================================
+# get_employee_profile_completes
+# ============================================================
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_completes_success(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT * FROM gold.employee_profile_complete_vw"
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+
+    mock_execute_query.return_value = _make_query_result(
+        [_sample_employee()]
+    )
+
+    filters = FiltersEnvelope(filters={})
+    sort = SortModel()
+    page = PaginationModel(limit=10)
+
+    result = employee_profile_complete_repo.get_employee_profile_completes(
+        filters=filters,
+        sort=sort,
+        page=page,
         columns=None,
     )
 
+    assert len(result["items"]) == 1
+    assert result["items"][0]["empl_id"] == "EMP-1001"
 
-# =============================================================================
-# Default limit
-# =============================================================================
+    mock_get_list_plan.assert_called_once()
+    mock_execute_query.assert_called_once()
 
 
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
 )
 @patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
 )
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_default_limit(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
+def test_get_employee_profile_completes_dict_filters(
+    mock_get_list_plan,
+    mock_execute_query,
 ):
-    mock_get_path_param.return_value = "CONT-1001"
-    mock_get_all_query_params.return_value = {}
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
 
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = None
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
 
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-    )
-
-    event = build_event(
-        contract_id="CONT-1001",
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    kwargs = mock_service.call_args.kwargs
-
-    assert kwargs["contract_id"] == "CONT-1001"
-    assert kwargs["limit"] == agent.settings.DEFAULT_PAGE_SIZE
-    assert kwargs["cursor"] is None
-    assert kwargs["columns"] is None
-
-
-# =============================================================================
-# Custom columns
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_custom_columns(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    columns = [
-        "contract_id",
-        "project_name",
-        "status",
-    ]
-
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "10",
+    filters = {
+        "empl_id": FilterOps(eq="EMP-1001")
     }
 
-    mock_get_columns.return_value = columns
-    mock_parse_filters.return_value = None
-
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-    )
-
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "10",
-        },
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    kwargs = mock_service.call_args.kwargs
-
-    assert kwargs["columns"] == columns
-
-
-# =============================================================================
-# Filters
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_filters(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    """
-    Verify a real FiltersEnvelope is sent to the service.
-    """
-
-    filters_envelope = build_filters()
-
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "10",
-        "status": "ACTIVE",
-    }
-
-    mock_get_columns.return_value = None
-
-    mock_parse_filters.return_value = filters_envelope
-
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-    )
-
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "10",
-            "status": "ACTIVE",
-        },
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    mock_parse_filters.assert_called_once()
-
-    kwargs = mock_service.call_args.kwargs
-
-    assert isinstance(
-        kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-    assert kwargs["filters"] == filters_envelope
-
-    assert (
-        kwargs["filters"]
-        .filters["status"]
-        .eq
-        == "ACTIVE"
-    )
-
-
-# =============================================================================
-# Applied filters metadata
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_sets_applied_filters(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    """
-    Verify parsed FiltersEnvelope is copied into metadata.
-    """
-
-    filters_envelope = build_filters()
-
-    mock_get_path_param.return_value = "CONT-1001"
-    mock_get_all_query_params.return_value = {}
-
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = filters_envelope
-
-    service_response = MockServiceResponse(
-        items=[AGENT_ITEM],
-    )
-
-    mock_service.return_value = service_response
-
-    event = build_event(
-        contract_id="CONT-1001",
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    assert isinstance(
-        service_response.metadata.applied_filters,
-        FiltersEnvelope,
-    )
-
-    assert (
-        service_response.metadata.applied_filters
-        == filters_envelope
-    )
-
-
-# =============================================================================
-# Not found
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_not_found(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    mock_get_path_param.return_value = "CONT-9999"
-    mock_get_all_query_params.return_value = {}
-
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = None
-
-    mock_service.return_value = MockServiceResponse(
-        items=[],
-        cursor=None,
-        has_more=False,
-    )
-
-    event = build_event(
-        contract_id="CONT-9999",
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response is not None
-    assert isinstance(response, dict)
-
-    assert response["statusCode"] in (
-        404,
-        400,
-    )
-
-    assert "body" in response
-
-
-# =============================================================================
-# Missing contract ID
-# =============================================================================
-
-
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-def test_get_agent_contract_locations_v1_missing_contract_id(
-    mock_get_path_param,
-    mock_context,
-):
-    mock_get_path_param.return_value = None
-
-    event = build_event(
-        contract_id=None,
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response is not None
-    assert isinstance(response, dict)
-    assert response["statusCode"] == 400
-
-    body = get_response_body(response)
-
-    assert body is not None
-
-    body_text = json.dumps(body)
-
-    assert "Contract ID is required" in body_text
-
-
-# =============================================================================
-# Invalid limit
-# =============================================================================
-
-
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-def test_get_agent_contract_locations_v1_invalid_limit(
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_context,
-):
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "NOT-A-NUMBER",
-    }
-
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "NOT-A-NUMBER",
-        },
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response is not None
-    assert isinstance(response, dict)
-
-    assert response["statusCode"] == 400
-
-
-# =============================================================================
-# Cursor handling
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_cursor(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "25",
-        "cursor": "cursor-token-123",
-    }
-
-    mock_get_columns.return_value = None
-    mock_parse_filters.return_value = None
-
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-        cursor="next-cursor",
-        has_more=True,
-    )
-
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "25",
-            "cursor": "cursor-token-123",
-        },
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    kwargs = mock_service.call_args.kwargs
-
-    assert kwargs["cursor"] == "cursor-token-123"
-    assert kwargs["limit"] == 25
-
-
-# =============================================================================
-# Service argument verification
-# =============================================================================
-
-
-@patch.object(
-    agent,
-    "agent_get_contract_locations",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_columns_query_parameter",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_all_query_params",
-)
-@patch.object(
-    agent.LambdaUtils,
-    "get_path_param",
-)
-@patch.object(
-    agent,
-    "parse_filters_from_query_params",
-)
-def test_get_agent_contract_locations_v1_service_arguments(
-    mock_parse_filters,
-    mock_get_path_param,
-    mock_get_all_query_params,
-    mock_get_columns,
-    mock_service,
-    mock_context,
-):
-    """
-    Verify every handler argument reaches the service correctly.
-    """
-
-    # IMPORTANT:
-    # Must be a real FiltersEnvelope, not MagicMock.
-    filters = build_filters()
-
-    columns = [
-        "contract_id",
-        "award_number",
-        "project_name",
-    ]
-
-    mock_get_path_param.return_value = "CONT-1001"
-
-    mock_get_all_query_params.return_value = {
-        "limit": "15",
-        "cursor": "abc123",
-    }
-
-    mock_get_columns.return_value = columns
-    mock_parse_filters.return_value = filters
-
-    mock_service.return_value = MockServiceResponse(
-        items=[AGENT_ITEM],
-    )
-
-    event = build_event(
-        contract_id="CONT-1001",
-        query_params={
-            "limit": "15",
-            "cursor": "abc123",
-        },
-    )
-
-    response = agent.get_agent_contract_locations_v1(
-        event,
-        mock_context,
-    )
-
-    assert response["statusCode"] == 200
-
-    mock_service.assert_called_once_with(
-        contract_id="CONT-1001",
+    result = employee_profile_complete_repo.get_employee_profile_completes(
         filters=filters,
-        limit=15,
-        cursor="abc123",
-        columns=columns,
+        sort=SortModel(),
+        page=PaginationModel(limit=10),
+        columns=None,
     )
+
+    assert result["items"] == []
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_completes_none_filters(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    result = employee_profile_complete_repo.get_employee_profile_completes(
+        filters=None,
+        sort=None,
+        page=None,
+        columns=None,
+    )
+
+    assert result["items"] == []
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+    assert isinstance(
+        call_kwargs["page"],
+        PaginationModel,
+    )
+
+    assert isinstance(
+        call_kwargs["sort"],
+        SortModel,
+    )
+
+
+# ============================================================
+# get_employee_profile_complete_by_id
+#
+# IMPORTANT:
+# empl_id is the lookup argument.
+# employee_key must NOT be passed as the function argument.
+# ============================================================
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_success(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+
+    mock_execute_query.return_value = _make_query_result(
+        [_sample_employee()]
+    )
+
+    result = (
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id(
+            empl_id="EMP-1001",
+            filters=None,
+            page=PaginationModel(limit=10),
+            columns=None,
+            sort=SortModel(),
+        )
+    )
+
+    assert len(result["items"]) == 1
+    assert result["items"][0]["empl_id"] == "EMP-1001"
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    filters = call_kwargs["filters"]
+
+    assert isinstance(filters, FiltersEnvelope)
+
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_not_found(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    result = (
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id(
+            empl_id="EMP-NOT-FOUND",
+            filters=None,
+            page=PaginationModel(limit=10),
+            columns=None,
+            sort=SortModel(),
+        )
+    )
+
+    assert result["items"] == []
+
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_none_filters(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    result = (
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id(
+            empl_id="EMP-1001",
+            filters=None,
+            page=PaginationModel(limit=10),
+            columns=None,
+            sort=SortModel(),
+        )
+    )
+
+    assert result["items"] == []
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    validated_filters = call_kwargs["filters"]
+
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
+    )
+
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_dict_filters(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    filters = {
+        "org_id": FilterOps(eq="ORG1")
+    }
+
+    result = (
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id(
+            empl_id="EMP-1001",
+            filters=filters,
+            page=PaginationModel(limit=10),
+            columns=None,
+            sort=SortModel(),
+        )
+    )
+
+    assert result["items"] == []
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+
+    validated_filters = call_kwargs["filters"]
+
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
+    )
+
+
+# ============================================================
+# Verify empl_id is injected into dictionary filters
+# ============================================================
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_injects_empl_id(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    filters = {}
+
+    employee_profile_complete_repo.get_employee_profile_complete_by_id(
+        empl_id="EMP-1001",
+        filters=filters,
+        page=PaginationModel(limit=10),
+        columns=None,
+        sort=SortModel(),
+    )
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+    validated_filters = call_kwargs["filters"]
+
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
+    )
+
+    # This is the important test:
+    # lookup filtering is based on empl_id.
+    filter_data = validated_filters.filters
+
+    assert "empl_id" in filter_data
+
+
+# ============================================================
+# Recursive FiltersEnvelope branch
+# ============================================================
+
+@patch(
+    "db.repositories.employee_profile_complete_repo.execute_query"
+)
+@patch.object(
+    employee_profile_complete_repo._builder,
+    "get_list_plan",
+)
+def test_get_employee_profile_complete_by_id_recursive_filter_branch(
+    mock_get_list_plan,
+    mock_execute_query,
+):
+    mock_plan = MagicMock()
+    mock_plan.sql = "SELECT ..."
+    mock_plan.params = []
+
+    mock_get_list_plan.return_value = mock_plan
+    mock_execute_query.return_value = _make_query_result([])
+
+    existing_rule = FilterRule(
+        field="org_id",
+        ops=FilterOps(eq="ORG1"),
+    )
+
+    filters = FiltersEnvelope(
+        filters=[existing_rule]
+    )
+
+    result = (
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id(
+            empl_id="EMP-1001",
+            filters=filters,
+            page=PaginationModel(limit=10),
+            columns=None,
+            sort=SortModel(),
+        )
+    )
+
+    assert result["items"] == []
+
+    call_kwargs = mock_get_list_plan.call_args.kwargs
+    validated_filters = call_kwargs["filters"]
+
+    assert isinstance(
+        validated_filters,
+        FiltersEnvelope,
+    )
+
+    # Existing filter + automatically injected empl_id filter.
+    assert len(validated_filters.filters) >= 2
+
+    empl_rules = [
+        rule
+        for rule in validated_filters.filters
+        if getattr(rule, "field", None) == "empl_id"
+    ]
+
+    assert len(empl_rules) == 1
+
+
+# ============================================================
+# Explicitly protect against the old employee_key API contract
+# ============================================================
+
+def test_get_employee_profile_complete_by_id_uses_empl_id_parameter():
+    """
+    Regression test.
+
+    The repository lookup API must use `empl_id`.
+    `employee_key` is a returned/view field and pagination key,
+    but is NOT the argument for this lookup function.
+    """
+
+    import inspect
+
+    signature = inspect.signature(
+        employee_profile_complete_repo
+        .get_employee_profile_complete_by_id
+    )
+
+    assert "empl_id" in signature.parameters
+    assert "employee_key" not in signature.parameters
