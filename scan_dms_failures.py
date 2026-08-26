@@ -1,10 +1,10 @@
 import json
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from v1.handlers import agent
+from v1.schemas import FilterOps, FiltersEnvelope
 
 
 # =============================================================================
@@ -25,17 +25,13 @@ AGENT_ITEM = {
 
 
 # =============================================================================
-# Helpers
+# Test helpers
 # =============================================================================
 
 
 class MockMetadata:
     """
-    Lightweight replacement for the service metadata model.
-
-    The handler uses:
-        results.metadata.applied_filters
-        results.metadata.model_dump()
+    Lightweight metadata object used by the mocked service response.
     """
 
     def __init__(
@@ -70,6 +66,7 @@ class MockServiceResponse:
         applied_filters=None,
     ):
         self.items = items if items is not None else []
+
         self.metadata = MockMetadata(
             cursor=cursor,
             has_more=has_more,
@@ -77,26 +74,12 @@ class MockServiceResponse:
         )
 
 
-def get_response_body(response):
-    """
-    Decode api_handler Lambda response body.
-    """
-    body = response.get("body")
-
-    if isinstance(body, str):
-        return json.loads(body)
-
-    return body
-
-
 def build_event(
     contract_id="CONT-1001",
     query_params=None,
 ):
     """
-    Build API Gateway style event matching:
-
-        /v1/agent/work_locations_vw/{contractId}
+    Build an API Gateway event for the Agent contract-location endpoint.
     """
 
     path_parameters = {}
@@ -130,6 +113,37 @@ def build_event(
     }
 
 
+def get_response_body(response):
+    """
+    Safely deserialize Lambda response body.
+    """
+
+    body = response.get("body")
+
+    if isinstance(body, str):
+        return json.loads(body)
+
+    return body
+
+
+def build_filters():
+    """
+    Return a real FiltersEnvelope.
+
+    V1MetadataModel requires applied_filters to be an actual
+    FiltersEnvelope or valid dictionary. Using MagicMock here causes
+    Pydantic validation failures.
+    """
+
+    return FiltersEnvelope(
+        filters={
+            "status": FilterOps(
+                eq="ACTIVE",
+            )
+        }
+    )
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -138,7 +152,7 @@ def build_event(
 @pytest.fixture
 def mock_context():
     """
-    Mock AWS Lambda context.
+    Create a mock AWS Lambda context.
     """
 
     context = MagicMock()
@@ -184,10 +198,6 @@ def test_get_agent_contract_locations_v1_success(
     mock_service,
     mock_context,
 ):
-    """
-    Verify successful contract-location request.
-    """
-
     mock_get_path_param.return_value = "CONT-1001"
 
     mock_get_all_query_params.return_value = {
@@ -268,11 +278,6 @@ def test_get_agent_contract_locations_v1_default_limit(
     mock_service,
     mock_context,
 ):
-    """
-    Verify the configured default page size is used when
-    limit is not supplied.
-    """
-
     mock_get_path_param.return_value = "CONT-1001"
     mock_get_all_query_params.return_value = {}
 
@@ -335,10 +340,6 @@ def test_get_agent_contract_locations_v1_custom_columns(
     mock_service,
     mock_context,
 ):
-    """
-    Verify selected columns are passed to the service.
-    """
-
     columns = [
         "contract_id",
         "project_name",
@@ -411,10 +412,10 @@ def test_get_agent_contract_locations_v1_filters(
     mock_context,
 ):
     """
-    Verify parsed filters are passed to the service.
+    Verify a real FiltersEnvelope is sent to the service.
     """
 
-    filters_envelope = MagicMock()
+    filters_envelope = build_filters()
 
     mock_get_path_param.return_value = "CONT-1001"
 
@@ -450,7 +451,19 @@ def test_get_agent_contract_locations_v1_filters(
 
     kwargs = mock_service.call_args.kwargs
 
-    assert kwargs["filters"] is filters_envelope
+    assert isinstance(
+        kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+    assert kwargs["filters"] == filters_envelope
+
+    assert (
+        kwargs["filters"]
+        .filters["status"]
+        .eq
+        == "ACTIVE"
+    )
 
 
 # =============================================================================
@@ -487,11 +500,10 @@ def test_get_agent_contract_locations_sets_applied_filters(
     mock_context,
 ):
     """
-    Handler should assign the parsed filter envelope to
-    results.metadata.applied_filters.
+    Verify parsed FiltersEnvelope is copied into metadata.
     """
 
-    filters_envelope = MagicMock()
+    filters_envelope = build_filters()
 
     mock_get_path_param.return_value = "CONT-1001"
     mock_get_all_query_params.return_value = {}
@@ -516,14 +528,19 @@ def test_get_agent_contract_locations_sets_applied_filters(
 
     assert response["statusCode"] == 200
 
+    assert isinstance(
+        service_response.metadata.applied_filters,
+        FiltersEnvelope,
+    )
+
     assert (
         service_response.metadata.applied_filters
-        is filters_envelope
+        == filters_envelope
     )
 
 
 # =============================================================================
-# Empty / contract not found
+# Not found
 # =============================================================================
 
 
@@ -555,10 +572,6 @@ def test_get_agent_contract_locations_v1_not_found(
     mock_service,
     mock_context,
 ):
-    """
-    Empty service response should result in ResourceNotFound handling.
-    """
-
     mock_get_path_param.return_value = "CONT-9999"
     mock_get_all_query_params.return_value = {}
 
@@ -583,8 +596,10 @@ def test_get_agent_contract_locations_v1_not_found(
     assert response is not None
     assert isinstance(response, dict)
 
-    # ResourceNotFoundError should be translated by api_handler.
-    assert response["statusCode"] in (404, 400)
+    assert response["statusCode"] in (
+        404,
+        400,
+    )
 
     assert "body" in response
 
@@ -602,10 +617,6 @@ def test_get_agent_contract_locations_v1_missing_contract_id(
     mock_get_path_param,
     mock_context,
 ):
-    """
-    contractId is mandatory for this route.
-    """
-
     mock_get_path_param.return_value = None
 
     event = build_event(
@@ -619,7 +630,6 @@ def test_get_agent_contract_locations_v1_missing_contract_id(
 
     assert response is not None
     assert isinstance(response, dict)
-
     assert response["statusCode"] == 400
 
     body = get_response_body(response)
@@ -649,10 +659,6 @@ def test_get_agent_contract_locations_v1_invalid_limit(
     mock_get_all_query_params,
     mock_context,
 ):
-    """
-    Non-numeric limit should result in a bad request.
-    """
-
     mock_get_path_param.return_value = "CONT-1001"
 
     mock_get_all_query_params.return_value = {
@@ -710,10 +716,6 @@ def test_get_agent_contract_locations_v1_cursor(
     mock_service,
     mock_context,
 ):
-    """
-    Verify cursor is passed from query string to the service.
-    """
-
     mock_get_path_param.return_value = "CONT-1001"
 
     mock_get_all_query_params.return_value = {
@@ -752,7 +754,7 @@ def test_get_agent_contract_locations_v1_cursor(
 
 
 # =============================================================================
-# Service invocation verification
+# Service argument verification
 # =============================================================================
 
 
@@ -785,10 +787,12 @@ def test_get_agent_contract_locations_v1_service_arguments(
     mock_context,
 ):
     """
-    Verify all handler arguments are forwarded correctly.
+    Verify every handler argument reaches the service correctly.
     """
 
-    filters = MagicMock()
+    # IMPORTANT:
+    # Must be a real FiltersEnvelope, not MagicMock.
+    filters = build_filters()
 
     columns = [
         "contract_id",
@@ -832,6 +836,3 @@ def test_get_agent_contract_locations_v1_service_arguments(
         cursor="abc123",
         columns=columns,
     )
-
-py -m pytest main-function\tests\unit\v1\test_agent.py -v --cov=v1.handlers.agent --cov-report=term-missing
-
