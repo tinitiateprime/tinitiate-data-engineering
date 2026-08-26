@@ -1,7 +1,133 @@
-import pytest
-from pydantic import ValidationError
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from domain.models.agent import AgentContractLocationResponse
+import pytest
+
+from v1.handlers import agent
+
+
+# =============================================================================
+# Test data
+# =============================================================================
+
+
+AGENT_ITEM = {
+    "contract_id": "CONT-1001",
+    "award_number": "AWD-1001",
+    "order_number": "ORD-1001",
+    "mod_number": "MOD-01",
+    "places": "Dallas, TX",
+    "project_name": "Test Project",
+    "program_manager_name": "Test Manager",
+    "status": "ACTIVE",
+}
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+class MockMetadata:
+    """
+    Lightweight replacement for the service metadata model.
+
+    The handler uses:
+        results.metadata.applied_filters
+        results.metadata.model_dump()
+    """
+
+    def __init__(
+        self,
+        cursor=None,
+        has_more=False,
+        applied_filters=None,
+    ):
+        self.cursor = cursor
+        self.has_more = has_more
+        self.applied_filters = applied_filters
+
+    def model_dump(self):
+        return {
+            "cursor": self.cursor,
+            "has_more": self.has_more,
+            "applied_filters": self.applied_filters,
+        }
+
+
+class MockServiceResponse:
+    """
+    Lightweight replacement for the response returned by
+    agent_get_contract_locations().
+    """
+
+    def __init__(
+        self,
+        items=None,
+        cursor=None,
+        has_more=False,
+        applied_filters=None,
+    ):
+        self.items = items if items is not None else []
+        self.metadata = MockMetadata(
+            cursor=cursor,
+            has_more=has_more,
+            applied_filters=applied_filters,
+        )
+
+
+def get_response_body(response):
+    """
+    Decode api_handler Lambda response body.
+    """
+    body = response.get("body")
+
+    if isinstance(body, str):
+        return json.loads(body)
+
+    return body
+
+
+def build_event(
+    contract_id="CONT-1001",
+    query_params=None,
+):
+    """
+    Build API Gateway style event matching:
+
+        /v1/agent/work_locations_vw/{contractId}
+    """
+
+    path_parameters = {}
+
+    if contract_id is not None:
+        path_parameters["contractId"] = contract_id
+
+    return {
+        "httpMethod": "GET",
+        "path": (
+            f"/v1/agent/work_locations_vw/{contract_id}"
+            if contract_id
+            else "/v1/agent/work_locations_vw/"
+        ),
+        "resource": "/v1/agent/work_locations_vw/{contractId}",
+        "headers": {
+            "Content-Type": "application/json",
+        },
+        "queryStringParameters": query_params,
+        "pathParameters": path_parameters,
+        "requestContext": {
+            "requestId": "unit-test-request-id",
+            "stage": "test",
+            "httpMethod": "GET",
+            "resourcePath": (
+                "/v1/agent/work_locations_vw/{contractId}"
+            ),
+        },
+        "body": None,
+        "isBase64Encoded": False,
+    }
 
 
 # =============================================================================
@@ -10,362 +136,702 @@ from domain.models.agent import AgentContractLocationResponse
 
 
 @pytest.fixture
-def agent_contract_location_dict():
+def mock_context():
     """
-    Standard snake_case payload matching AgentContractLocationResponse.
+    Mock AWS Lambda context.
     """
-    return {
-        "contract_id": "CONT-1001",
-        "award_number": "AWD-1001",
-        "order_number": "ORD-1001",
-        "mod_number": "MOD-01",
-        "places": "Dallas, TX",
-        "project_name": "Test Project",
-        "program_manager_name": "Test Manager",
+
+    context = MagicMock()
+
+    context.function_name = "agent-unit-test"
+    context.aws_request_id = "unit-test-request-id"
+    context.memory_limit_in_mb = 128
+    context.get_remaining_time_in_millis.return_value = 30000
+
+    return context
+
+
+# =============================================================================
+# Successful request
+# =============================================================================
+
+
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_success(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
+    """
+    Verify successful contract-location request.
+    """
+
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "10",
+        "cursor": "next-token",
+    }
+
+    mock_get_columns.return_value = None
+    mock_parse_filters.return_value = None
+
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+        cursor="next-token",
+        has_more=True,
+    )
+
+    event = build_event(
+        contract_id="CONT-1001",
+        query_params={
+            "limit": "10",
+            "cursor": "next-token",
+        },
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response is not None
+    assert isinstance(response, dict)
+    assert response["statusCode"] == 200
+    assert "body" in response
+
+    body = get_response_body(response)
+
+    assert body is not None
+
+    mock_service.assert_called_once_with(
+        contract_id="CONT-1001",
+        filters=None,
+        limit=10,
+        cursor="next-token",
+        columns=None,
+    )
+
+
+# =============================================================================
+# Default limit
+# =============================================================================
+
+
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_default_limit(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
+    """
+    Verify the configured default page size is used when
+    limit is not supplied.
+    """
+
+    mock_get_path_param.return_value = "CONT-1001"
+    mock_get_all_query_params.return_value = {}
+
+    mock_get_columns.return_value = None
+    mock_parse_filters.return_value = None
+
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+    )
+
+    event = build_event(
+        contract_id="CONT-1001",
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    kwargs = mock_service.call_args.kwargs
+
+    assert kwargs["contract_id"] == "CONT-1001"
+    assert kwargs["limit"] == agent.settings.DEFAULT_PAGE_SIZE
+    assert kwargs["cursor"] is None
+    assert kwargs["columns"] is None
+
+
+# =============================================================================
+# Custom columns
+# =============================================================================
+
+
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_custom_columns(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
+    """
+    Verify selected columns are passed to the service.
+    """
+
+    columns = [
+        "contract_id",
+        "project_name",
+        "status",
+    ]
+
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "10",
+    }
+
+    mock_get_columns.return_value = columns
+    mock_parse_filters.return_value = None
+
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+    )
+
+    event = build_event(
+        contract_id="CONT-1001",
+        query_params={
+            "limit": "10",
+        },
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    kwargs = mock_service.call_args.kwargs
+
+    assert kwargs["columns"] == columns
+
+
+# =============================================================================
+# Filters
+# =============================================================================
+
+
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_filters(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
+    """
+    Verify parsed filters are passed to the service.
+    """
+
+    filters_envelope = MagicMock()
+
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "10",
         "status": "ACTIVE",
     }
 
+    mock_get_columns.return_value = None
+
+    mock_parse_filters.return_value = filters_envelope
+
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+    )
+
+    event = build_event(
+        contract_id="CONT-1001",
+        query_params={
+            "limit": "10",
+            "status": "ACTIVE",
+        },
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    mock_parse_filters.assert_called_once()
+
+    kwargs = mock_service.call_args.kwargs
+
+    assert kwargs["filters"] is filters_envelope
+
 
 # =============================================================================
-# Basic model tests
+# Applied filters metadata
 # =============================================================================
 
 
-def test_agent_contract_location_response_success(
-    agent_contract_location_dict,
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_sets_applied_filters(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
 ):
     """
-    Verify the model can be created using snake_case field names.
+    Handler should assign the parsed filter envelope to
+    results.metadata.applied_filters.
     """
 
-    result = AgentContractLocationResponse(
-        **agent_contract_location_dict
+    filters_envelope = MagicMock()
+
+    mock_get_path_param.return_value = "CONT-1001"
+    mock_get_all_query_params.return_value = {}
+
+    mock_get_columns.return_value = None
+    mock_parse_filters.return_value = filters_envelope
+
+    service_response = MockServiceResponse(
+        items=[AGENT_ITEM],
     )
 
-    assert result.contract_id == "CONT-1001"
-    assert result.award_number == "AWD-1001"
-    assert result.order_number == "ORD-1001"
-    assert result.mod_number == "MOD-01"
-    assert result.places == "Dallas, TX"
-    assert result.project_name == "Test Project"
-    assert result.program_manager_name == "Test Manager"
-    assert result.status == "ACTIVE"
+    mock_service.return_value = service_response
 
-
-def test_agent_contract_location_required_contract_id():
-    """
-    contract_id is required.
-    """
-
-    with pytest.raises(ValidationError):
-        AgentContractLocationResponse(
-            award_number="AWD-1001",
-            order_number="ORD-1001",
-            mod_number="MOD-01",
-            places="Dallas, TX",
-            project_name="Test Project",
-            program_manager_name="Test Manager",
-            status="ACTIVE",
-        )
-
-
-def test_agent_contract_location_optional_fields():
-    """
-    All fields other than contract_id are optional.
-    """
-
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001"
+    event = build_event(
+        contract_id="CONT-1001",
     )
 
-    assert result.contract_id == "CONT-1001"
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
 
-    assert result.award_number is None
-    assert result.order_number is None
-    assert result.mod_number is None
-    assert result.places is None
-    assert result.project_name is None
-    assert result.program_manager_name is None
-    assert result.status is None
+    assert response["statusCode"] == 200
+
+    assert (
+        service_response.metadata.applied_filters
+        is filters_envelope
+    )
 
 
 # =============================================================================
-# Alias tests
+# Empty / contract not found
 # =============================================================================
 
 
-def test_contract_id_camel_case_alias():
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_not_found(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
     """
-    Verify contractId is accepted.
+    Empty service response should result in ResourceNotFound handling.
     """
 
-    result = AgentContractLocationResponse(
-        contractId="CONT-1001"
+    mock_get_path_param.return_value = "CONT-9999"
+    mock_get_all_query_params.return_value = {}
+
+    mock_get_columns.return_value = None
+    mock_parse_filters.return_value = None
+
+    mock_service.return_value = MockServiceResponse(
+        items=[],
+        cursor=None,
+        has_more=False,
     )
 
-    assert result.contract_id == "CONT-1001"
-
-
-def test_contract_id_uppercase_alias():
-    """
-    Verify CONTRACT_ID is accepted.
-    """
-
-    result = AgentContractLocationResponse(
-        CONTRACT_ID="CONT-1001"
+    event = build_event(
+        contract_id="CONT-9999",
     )
 
-    assert result.contract_id == "CONT-1001"
-
-
-def test_award_number_camel_case_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        awardNumber="AWD-1001",
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
     )
 
-    assert result.award_number == "AWD-1001"
+    assert response is not None
+    assert isinstance(response, dict)
 
+    # ResourceNotFoundError should be translated by api_handler.
+    assert response["statusCode"] in (404, 400)
 
-def test_award_number_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        AWARD_NUMBER="AWD-1001",
-    )
-
-    assert result.award_number == "AWD-1001"
-
-
-def test_order_number_camel_case_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        orderNumber="ORD-1001",
-    )
-
-    assert result.order_number == "ORD-1001"
-
-
-def test_order_number_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        ORDER_NUMBER="ORD-1001",
-    )
-
-    assert result.order_number == "ORD-1001"
-
-
-def test_mod_number_camel_case_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        modNumber="MOD-01",
-    )
-
-    assert result.mod_number == "MOD-01"
-
-
-def test_mod_number_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        MOD_NUMBER="MOD-01",
-    )
-
-    assert result.mod_number == "MOD-01"
-
-
-def test_places_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        PLACES="Dallas, TX",
-    )
-
-    assert result.places == "Dallas, TX"
-
-
-def test_project_name_camel_case_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        projectName="Test Project",
-    )
-
-    assert result.project_name == "Test Project"
-
-
-def test_project_name_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        PROJECT_NAME="Test Project",
-    )
-
-    assert result.project_name == "Test Project"
-
-
-def test_program_manager_name_camel_case_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        programManagerName="Test Manager",
-    )
-
-    assert result.program_manager_name == "Test Manager"
-
-
-def test_program_manager_name_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        PROGRAM_MANAGER_NAME="Test Manager",
-    )
-
-    assert result.program_manager_name == "Test Manager"
-
-
-def test_status_uppercase_alias():
-    result = AgentContractLocationResponse(
-        contract_id="CONT-1001",
-        STATUS="ACTIVE",
-    )
-
-    assert result.status == "ACTIVE"
+    assert "body" in response
 
 
 # =============================================================================
-# Complete database-style payload
+# Missing contract ID
 # =============================================================================
 
 
-def test_agent_contract_location_from_database_columns():
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+def test_get_agent_contract_locations_v1_missing_contract_id(
+    mock_get_path_param,
+    mock_context,
+):
     """
-    Verify a payload using database-style uppercase columns
-    is converted correctly.
+    contractId is mandatory for this route.
     """
 
-    payload = {
-        "CONTRACT_ID": "CONT-1001",
-        "AWARD_NUMBER": "AWD-1001",
-        "ORDER_NUMBER": "ORD-1001",
-        "MOD_NUMBER": "MOD-01",
-        "PLACES": "Dallas, TX",
-        "PROJECT_NAME": "Test Project",
-        "PROGRAM_MANAGER_NAME": "Test Manager",
-        "STATUS": "ACTIVE",
+    mock_get_path_param.return_value = None
+
+    event = build_event(
+        contract_id=None,
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response is not None
+    assert isinstance(response, dict)
+
+    assert response["statusCode"] == 400
+
+    body = get_response_body(response)
+
+    assert body is not None
+
+    body_text = json.dumps(body)
+
+    assert "Contract ID is required" in body_text
+
+
+# =============================================================================
+# Invalid limit
+# =============================================================================
+
+
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+def test_get_agent_contract_locations_v1_invalid_limit(
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_context,
+):
+    """
+    Non-numeric limit should result in a bad request.
+    """
+
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "NOT-A-NUMBER",
     }
 
-    result = AgentContractLocationResponse(**payload)
+    event = build_event(
+        contract_id="CONT-1001",
+        query_params={
+            "limit": "NOT-A-NUMBER",
+        },
+    )
 
-    assert result.contract_id == "CONT-1001"
-    assert result.award_number == "AWD-1001"
-    assert result.order_number == "ORD-1001"
-    assert result.mod_number == "MOD-01"
-    assert result.places == "Dallas, TX"
-    assert result.project_name == "Test Project"
-    assert result.program_manager_name == "Test Manager"
-    assert result.status == "ACTIVE"
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response is not None
+    assert isinstance(response, dict)
+
+    assert response["statusCode"] == 400
 
 
 # =============================================================================
-# Complete API-style payload
+# Cursor handling
 # =============================================================================
 
 
-def test_agent_contract_location_from_api_aliases():
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_cursor(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
     """
-    Verify camelCase API field aliases.
+    Verify cursor is passed from query string to the service.
     """
 
-    payload = {
-        "contractId": "CONT-1001",
-        "awardNumber": "AWD-1001",
-        "orderNumber": "ORD-1001",
-        "modNumber": "MOD-01",
-        "places": "Dallas, TX",
-        "projectName": "Test Project",
-        "programManagerName": "Test Manager",
-        "status": "ACTIVE",
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "25",
+        "cursor": "cursor-token-123",
     }
 
-    result = AgentContractLocationResponse(**payload)
+    mock_get_columns.return_value = None
+    mock_parse_filters.return_value = None
 
-    assert result.contract_id == "CONT-1001"
-    assert result.award_number == "AWD-1001"
-    assert result.order_number == "ORD-1001"
-    assert result.mod_number == "MOD-01"
-    assert result.places == "Dallas, TX"
-    assert result.project_name == "Test Project"
-    assert result.program_manager_name == "Test Manager"
-    assert result.status == "ACTIVE"
-
-
-# =============================================================================
-# Serialization
-# =============================================================================
-
-
-def test_agent_contract_location_model_dump(
-    agent_contract_location_dict,
-):
-    """
-    Verify normal model serialization.
-    """
-
-    model = AgentContractLocationResponse(
-        **agent_contract_location_dict
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+        cursor="next-cursor",
+        has_more=True,
     )
 
-    result = model.model_dump()
-
-    assert result["contract_id"] == "CONT-1001"
-    assert result["award_number"] == "AWD-1001"
-    assert result["order_number"] == "ORD-1001"
-    assert result["mod_number"] == "MOD-01"
-    assert result["places"] == "Dallas, TX"
-    assert result["project_name"] == "Test Project"
-    assert result["program_manager_name"] == "Test Manager"
-    assert result["status"] == "ACTIVE"
-
-
-def test_agent_contract_location_model_dump_by_alias(
-    agent_contract_location_dict,
-):
-    """
-    Verify response serialization uses the configured aliases.
-    """
-
-    model = AgentContractLocationResponse(
-        **agent_contract_location_dict
-    )
-
-    result = model.model_dump(by_alias=True)
-
-    assert result["contractId"] == "CONT-1001"
-    assert result["awardNumber"] == "AWD-1001"
-    assert result["orderNumber"] == "ORD-1001"
-    assert result["modNumber"] == "MOD-01"
-    assert result["places"] == "Dallas, TX"
-    assert result["projectName"] == "Test Project"
-    assert result["programManagerName"] == "Test Manager"
-    assert result["status"] == "ACTIVE"
-
-
-# =============================================================================
-# None handling
-# =============================================================================
-
-
-def test_agent_contract_location_accepts_none_optional_values():
-    result = AgentContractLocationResponse(
+    event = build_event(
         contract_id="CONT-1001",
-        award_number=None,
-        order_number=None,
-        mod_number=None,
-        places=None,
-        project_name=None,
-        program_manager_name=None,
-        status=None,
+        query_params={
+            "limit": "25",
+            "cursor": "cursor-token-123",
+        },
     )
 
-    assert result.contract_id == "CONT-1001"
-    assert result.award_number is None
-    assert result.order_number is None
-    assert result.mod_number is None
-    assert result.places is None
-    assert result.project_name is None
-    assert result.program_manager_name is None
-    assert result.status is None
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    kwargs = mock_service.call_args.kwargs
+
+    assert kwargs["cursor"] == "cursor-token-123"
+    assert kwargs["limit"] == 25
+
+
+# =============================================================================
+# Service invocation verification
+# =============================================================================
+
+
+@patch.object(
+    agent,
+    "agent_get_contract_locations",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_columns_query_parameter",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_all_query_params",
+)
+@patch.object(
+    agent.LambdaUtils,
+    "get_path_param",
+)
+@patch.object(
+    agent,
+    "parse_filters_from_query_params",
+)
+def test_get_agent_contract_locations_v1_service_arguments(
+    mock_parse_filters,
+    mock_get_path_param,
+    mock_get_all_query_params,
+    mock_get_columns,
+    mock_service,
+    mock_context,
+):
+    """
+    Verify all handler arguments are forwarded correctly.
+    """
+
+    filters = MagicMock()
+
+    columns = [
+        "contract_id",
+        "award_number",
+        "project_name",
+    ]
+
+    mock_get_path_param.return_value = "CONT-1001"
+
+    mock_get_all_query_params.return_value = {
+        "limit": "15",
+        "cursor": "abc123",
+    }
+
+    mock_get_columns.return_value = columns
+    mock_parse_filters.return_value = filters
+
+    mock_service.return_value = MockServiceResponse(
+        items=[AGENT_ITEM],
+    )
+
+    event = build_event(
+        contract_id="CONT-1001",
+        query_params={
+            "limit": "15",
+            "cursor": "abc123",
+        },
+    )
+
+    response = agent.get_agent_contract_locations_v1(
+        event,
+        mock_context,
+    )
+
+    assert response["statusCode"] == 200
+
+    mock_service.assert_called_once_with(
+        contract_id="CONT-1001",
+        filters=filters,
+        limit=15,
+        cursor="abc123",
+        columns=columns,
+    )
+
+py -m pytest main-function\tests\unit\v1\test_agent.py -v --cov=v1.handlers.agent --cov-report=term-missing
+
