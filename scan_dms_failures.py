@@ -1,56 +1,80 @@
+WITH latest AS
+(
+    SELECT DISTINCT ON (source_schema, source_table)
+        run_id,
+        source_schema,
+        source_table,
+        target_schema,
+        target_table,
+        bronze_count,
+        silver_count,
+        rows_processed,
+        status,
+        start_datetime,
+        end_datetime,
+        message
+    FROM etl_control.etl_load_control
+    ORDER BY
+        source_schema,
+        source_table,
+        start_datetime DESC
+)
 SELECT
-    config_id,
     source_schema,
     source_table,
     target_schema,
     target_table,
+    bronze_count,
+    rows_processed,
+    status,
+    end_datetime - start_datetime AS duration,
+    CASE
+        WHEN message ILIKE '%SNAPSHOT_REPLACE%'
+          OR message ILIKE '%complete Bronze%'
+            THEN 'SNAPSHOT_REPLACE'
+        WHEN message ILIKE '%INITIAL_FULL_LOAD%'
+          OR message ILIKE '%target was empty%'
+            THEN 'INITIAL_FULL_LOAD'
+        WHEN message ILIKE '%Merged%'
+            THEN 'ROLLING_WINDOW_MERGE'
+        WHEN message ILIKE '%Replaced%'
+          AND message ILIKE '%day%'
+            THEN 'ROLLING_WINDOW_REPLACE'
+        ELSE 'CHECK MESSAGE'
+    END AS actual_processing,
+    message
+FROM latest
+ORDER BY rows_processed DESC NULLS LAST;
+
+
+WITH latest AS
+(
+    SELECT DISTINCT ON (source_schema, source_table)
+        *
+    FROM etl_control.etl_load_control
+    ORDER BY
+        source_schema,
+        source_table,
+        start_datetime DESC
+)
+SELECT
+    l.source_schema,
+    l.source_table,
     pg_size_pretty(
         pg_total_relation_size(
-            to_regclass(
-                format('%I.%I', target_schema, target_table)
-            )
+            to_regclass(format('%I.%I', l.target_schema, l.target_table))
         )
-    ) AS total_size,
-    pg_size_pretty(
-        pg_relation_size(
-            to_regclass(
-                format('%I.%I', target_schema, target_table)
-            )
-        )
-    ) AS table_size,
-    pg_size_pretty(
-        pg_indexes_size(
-            to_regclass(
-                format('%I.%I', target_schema, target_table)
-            )
-        )
-    ) AS index_size
-FROM etl_control.etl_table_config
-WHERE enabled = true
-  AND load_strategy = 'SNAPSHOT_REPLACE'
-  AND to_regclass(
-        format('%I.%I', target_schema, target_table)
+    ) AS target_size,
+    l.bronze_count,
+    l.rows_processed,
+    l.end_datetime - l.start_datetime AS duration,
+    l.message
+FROM latest l
+WHERE to_regclass(
+          format('%I.%I', l.target_schema, l.target_table)
       ) IS NOT NULL
 ORDER BY pg_total_relation_size(
-             to_regclass(
-                 format('%I.%I', target_schema, target_table)
-             )
-         ) DESC;
+             to_regclass(format('%I.%I', l.target_schema, l.target_table))
+         ) DESC
+LIMIT 25;
 
-
-
-SELECT
-    schemaname,
-    relname AS table_name,
-    n_live_tup,
-    n_dead_tup,
-    last_autovacuum,
-    last_autoanalyze
-FROM pg_stat_user_tables
-WHERE (schemaname, relname) IN (
-    SELECT target_schema, target_table
-    FROM etl_control.etl_table_config
-    WHERE enabled = true
-      AND load_strategy = 'SNAPSHOT_REPLACE'
-)
-ORDER BY n_dead_tup DESC;
