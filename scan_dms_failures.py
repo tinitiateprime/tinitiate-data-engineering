@@ -1,26 +1,28 @@
-27b3cf6  Add unit tests for API
+git push origin jay-api-coverage-13fix
 
-# 1. Make sure the current commit is safely pushed
+# 1. Create the new branch FROM your current state
+git switch -c jay-api-coverage-13fix
+
+# 2. Confirm you are on the new branch
+git branch --show-current
+
+# Expected:
+# jay-api-coverage-13fix
+
+# 3. Confirm only the intended files differ from main
+git diff --name-only origin/main...HEAD
+
+# 4. Confirm commits ahead of main
+git log --oneline origin/main..HEAD
+
+# 5. Push the new branch
+git push -u origin jay-api-coverage-13fix
+
+git diff --name-only origin/main...HEAD
+
+
+git switch main
+git fetch origin
+git reset --hard origin/main
+
 git status
-git push origin jay-api-coverage-fix
-
-# 2. Switch to main
-git checkout main
-
-# 3. Update local main
-git pull origin main
-
-# 4. Create a NEW clean branch from main
-git checkout -b jay-api-coverage-fix-13
-
-# 5. Bring ONLY your 13-file commit into the new branch
-git cherry-pick 27b3cf6
-
-# 6. Verify what changed compared with main
-git diff --name-only main..HEAD
-
-# 7. Check status
-git status
-
-# 8. Push the new branch
-git push -u origin jay-api-coverage-fix-13
