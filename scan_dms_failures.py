@@ -1,28 +1,29 @@
-git push origin jay-api-coverage-13fix 
-
-# 1. Create the new branch FROM your current state
-git switch -c jay-api-coverage-13fix
-
-# 2. Confirm you are on the new branch
-git branch --show-current
-
-# Expected:
-# jay-api-coverage-13fix
-
-# 3. Confirm only the intended files differ from main
-git diff --name-only origin/main...HEAD
-
-# 4. Confirm commits ahead of main
-git log --oneline origin/main..HEAD
-
-# 5. Push the new branch
-git push -u origin jay-api-coverage-13fix
-
-git diff --name-only origin/main...HEAD
-
-
 git switch main
 git fetch origin
 git reset --hard origin/main
 
-git status
+git switch -c jay-api-coverage-13fix-v2
+
+git show --name-only --stat 27b3cf6
+git show --name-only --stat 3bfcb74
+git show --name-only --stat 75d574c
+git show --name-only --stat 13472a3
+git show --name-only --stat 5b53e67
+git show --name-only --stat eaab0f5
+git show --name-only --stat e17a6ae
+git show --name-only --stat 0629222
+
+git cherry-pick 27b3cf6
+git cherry-pick 3bfcb74
+git cherry-pick 75d574c
+git cherry-pick 13472a3
+git cherry-pick 5b53e67
+git cherry-pick eaab0f5
+git cherry-pick e17a6ae
+git cherry-pick 0629222
+
+git diff --name-only origin/main...HEAD
+
+git push -u origin jay-api-coverage-13fix-v2
+
+git log --oneline --reverse origin/main..jay-api-coverage-fix
