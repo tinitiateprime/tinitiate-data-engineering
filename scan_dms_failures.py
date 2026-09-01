@@ -1,7 +1,2 @@
-{
-  "source": ["aws.glue"],
-  "detail-type": ["Glue Job State Change"],
-  "detail": {
-    "state": ["FAILED", "TIMEOUT", "ERROR"]
-  }
-}
+jobName → $.detail.jobName, state → $.detail.state, jobRunId → $.detail.jobRunId, message → $.detail.message
+Template: "Glue job <jobName> ended with state <state> (run <jobRunId>). Message: <message>"
