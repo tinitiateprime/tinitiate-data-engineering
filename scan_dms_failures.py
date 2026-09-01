@@ -1,15 +1,3 @@
-{
-  "source": ["aws.glue"],
-  "detail-type": ["Glue Job State Change"],
-  "detail": {
-    "state": ["FAILED", "TIMEOUT", "ERROR"]
-  }
-}
+Can you create the IAM role Amazon_EventBridge_Invoke_Sns_Glue_Alerts in the hii-mt-gsapdi-gov account with this trust policy and permissions policy? [attach the same JSON from before]
 
-
-{
-  "jobName": "$.detail.jobName",
-  "state": "$.detail.state",
-  "jobRunId": "$.detail.jobRunId",
-  "message": "$.detail.message"
-}
+Once it's created, I'll select it directly — I don't have iam:CreateRole permission myself, which is why I keep hitting an authorization error trying to let the console auto-create the role.
