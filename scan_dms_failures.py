@@ -1,4 +1,11 @@
 {
+  "jobName": "$.detail.jobName",
+  "state": "$.detail.state",
+  "jobRunId": "$.detail.jobRunId",
+  "message": "$.detail.message"
+}
+
+{
   "Version": "2012-10-17",
   "Statement": [
     {
