@@ -1,3 +1,24 @@
-Can you create the IAM role Amazon_EventBridge_Invoke_Sns_Glue_Alerts in the hii-mt-gsapdi-gov account with this trust policy and permissions policy? [attach the same JSON from before]
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "events.amazonaws.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
 
-Once it's created, I'll select it directly — I don't have iam:CreateRole permission myself, which is why I keep hitting an authorization error trying to let the console auto-create the role.
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws-us-gov:sns:us-gov-west-1:514899973745:glue-job-mt-dm-glue-clm"
+    }
+  ]
+}
+
+
+"Glue job <jobName> ended with state <state> (run <jobRunId>). Message: <message>"
