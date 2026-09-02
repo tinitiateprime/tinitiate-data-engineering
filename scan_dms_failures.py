@@ -1,3 +1,5 @@
+Hi [admin], I'm hitting an iam:PassRole permission error trying to attach mt-dm-glue-role to an EventBridge rule (mt-dm-clm-failure-notify). Rather than granting me PassRole on the Glue execution role, could you create a small dedicated role for this instead? I sent the exact trust policy + permissions policy JSON earlier (Amazon_EventBridge_Invoke_Sns_Glue_Alerts) — that avoids reusing the Glue job role for something unrelated, and avoids me needing broad IAM permissions on my own account. Once it exists, I'll select it directly and won't need any additional grants.
+
 {
   "source": ["aws.glue"],
   "detail-type": ["Glue Job State Change"],
