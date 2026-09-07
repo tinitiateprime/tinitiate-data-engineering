@@ -1,41 +1,72 @@
-Hi [admin], I'm hitting an iam:PassRole permission error trying to attach mt-dm-glue-role to an EventBridge rule (mt-dm-clm-failure-notify). Rather than granting me PassRole on the Glue execution role, could you create a small dedicated role for this instead? I sent the exact trust policy + permissions policy JSON earlier (Amazon_EventBridge_Invoke_Sns_Glue_Alerts) — that avoids reusing the Glue job role for something unrelated, and avoids me needing broad IAM permissions on my own account. Once it exists, I'll select it directly and won't need any additional grants.
+get the list of materialized views:
 
-{
-  "source": ["aws.glue"],
-  "detail-type": ["Glue Job State Change"],
-  "detail": {
-    "state": ["FAILED", "TIMEOUT", "ERROR"]
-  }
-}
+SELECT
+    schemaname,
+    matviewname
+FROM pg_matviews
+WHERE schemaname = 'mtdm'
+ORDER BY matviewname;
 
-{
-  "jobName": "$.detail.jobName",
-  "state": "$.detail.state",
-  "jobRunId": "$.detail.jobRunId",
-  "message": "$.detail.message"
-}
+get the SQL definition for all of them:
 
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": { "Service": "events.amazonaws.com" },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
+SELECT
+    schemaname,
+    matviewname,
+    pg_get_viewdef(
+        format('%I.%I', schemaname, matviewname)::regclass,
+        true
+    ) AS mv_definition
+FROM pg_matviews
+WHERE schemaname = 'mtdm'
+ORDER BY matviewname;
 
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "sns:Publish",
-      "Resource": "arn:aws-us-gov:sns:us-gov-west-1:514899973745:glue-job-mt-dm-glue-clm"
-    }
-  ]
-}
+For each MV, create a file like:
+SQL Scripts/
+└── MVs/
+    ├── contract.sql
+    ├── project_financial.sql
+    ├── project_status.sql
+    └── ...
+
+put this structure in each file:
+
+CREATE MATERIALIZED VIEW mtdm.<mv_name> AS
+
+<definition returned by pg_get_viewdef>
+
+WITH DATA;
+
+MVs version-controlled properly, so also get their indexes:
+SELECT
+    schemaname,
+    matviewname,
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname = 'mtdm'
+  AND tablename IN (
+      SELECT matviewname
+      FROM pg_matviews
+      WHERE schemaname = 'mtdm'
+  )
+ORDER BY matviewname, indexname;
 
 
-"Glue job <jobName> ended with state <state> (run <jobRunId>). Message: <message>"
+generate the CREATE statements automatically
+
+SELECT
+    '-- =============================================' || E'\n' ||
+    '-- Materialized View: ' || schemaname || '.' || matviewname || E'\n' ||
+    '-- =============================================' || E'\n\n' ||
+    'CREATE MATERIALIZED VIEW ' ||
+    quote_ident(schemaname) || '.' || quote_ident(matviewname) ||
+    ' AS' || E'\n\n' ||
+    pg_get_viewdef(
+        format('%I.%I', schemaname, matviewname)::regclass,
+        true
+    ) ||
+    E'\n\nWITH DATA;' AS ddl
+FROM pg_matviews
+WHERE schemaname = 'mtdm'
+ORDER BY matviewname;
+
