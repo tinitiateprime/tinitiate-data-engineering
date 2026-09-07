@@ -70,3 +70,53 @@ FROM pg_matviews
 WHERE schemaname = 'mtdm'
 ORDER BY matviewname;
 
+
+generate one complete CREATE script per materialized view, including all indexes belonging to that MV.  
+
+
+SELECT
+    mv.schemaname,
+    mv.matviewname,
+
+    '-- =====================================================' || E'\n' ||
+    '-- Materialized View: ' ||
+    quote_ident(mv.schemaname) || '.' ||
+    quote_ident(mv.matviewname) || E'\n' ||
+    '-- =====================================================' || E'\n\n' ||
+
+    'CREATE MATERIALIZED VIEW ' ||
+    quote_ident(mv.schemaname) || '.' ||
+    quote_ident(mv.matviewname) ||
+    ' AS' || E'\n\n' ||
+
+    pg_get_viewdef(
+        format('%I.%I', mv.schemaname, mv.matviewname)::regclass,
+        true
+    ) ||
+
+    E'\n\nWITH DATA;' ||
+
+    E'\n\n-- =====================================================' ||
+    E'\n-- Indexes' ||
+    E'\n-- =====================================================' ||
+    E'\n\n' ||
+
+    COALESCE(
+        (
+            SELECT string_agg(
+                idx.indexdef || ';',
+                E'\n\n'
+                ORDER BY idx.indexname
+            )
+            FROM pg_indexes idx
+            WHERE idx.schemaname = mv.schemaname
+              AND idx.tablename = mv.matviewname
+        ),
+        '-- No indexes defined for this materialized view'
+    ) ||
+
+    E'\n' AS complete_ddl
+
+FROM pg_matviews mv
+WHERE mv.schemaname = 'mtdm'
+ORDER BY mv.matviewname;
