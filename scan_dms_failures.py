@@ -1,245 +1,130 @@
-"""
-API Route handlers for v1.
+# tests/unit/test_db_connection.py
 
-Organized by functional domain.
-Importing these modules ensures they register their routes with the central router.
-"""
+from unittest.mock import MagicMock, patch
 
-from .agent import get_agent_contract_locations_v1
-from .auth import (
-    get_okta_login_url_v1,
-    handle_okta_login_callback_v1,
-    logout_handler_v1,
-)
+import pytest
 
-# NOTE: The router matches routes with re.match() (prefix match, not
-# fullmatch), so a broad single-segment pattern like
-# /v1/contracts/(?P<contractid>[^/]+) will also match longer paths such as
-# /v1/contracts/master/PROJ-001 (it just ignores the unconsumed remainder).
-# The router returns the FIRST registered pattern that matches, so more
-# specific multi-segment routes (contract_master) MUST be imported/registered
-# before the generic single-segment ones (contracts) or they become
-# unreachable. This mirrors the existing manager/org/clearance-before-empl_id
-# ordering in employees.py.
-from .contract_master import (
-    get_contract_master_v1,
-    get_contract_modifications_v1,
-    list_contract_master_v1,
-    search_contract_master_v1,
-    search_contract_modifications_v1,
-)
-from .contract_program_manager import (
-    get_contract_program_managers_v1,
-    search_contract_program_managers_v1,
-)
-from .contract_analysis import (
-    get_contract_analysis_v1,
-    search_contract_analysis_v1,
-)
-from .clm_tcv import (
-    get_clm_contract_v1,
-    list_clm_contracts_v1,
-    search_clm_contracts_v1,
-)
-from .employee_profile_complete import (
-    get_employee_profile_complete_v1,
-    search_employee_profile_completes_v1,
-    list_employee_profile_completes_v1,
-)
-from .contracts import (
-    get_contract_v1,
-    list_contracts_v1,
-    search_contracts_v1,
-)
-from .employees import (
-    get_certifications_by_org_blank_v1,
-    get_certifications_by_org_v1,
-    get_certifications_by_status_blank_v1,
-    get_certifications_by_status_v1,
-    get_employee_certifications_blank_v1,
-    get_employee_certifications_v1,
-    get_employee_direct_reports_blank_v1,
-    get_employee_direct_reports_v1,
-    get_employee_profile_blank_v1,
-    get_employee_profile_v1,
-    get_employee_training_blank_v1,
-    get_employee_training_v1,
-    get_employees_by_clearance_blank_v1,
-    get_employees_by_clearance_v1,
-    get_employees_by_org_v1,
-    get_org_blank_v1,
-    get_personnel_roster_v1,
-    get_training_by_org_blank_v1,
-    get_training_by_org_v1,
-    get_training_by_status_blank_v1,
-    get_training_by_status_v1,
-    get_training_by_type_blank_v1,
-    get_training_by_type_v1,
-    search_employee_certifications_v1,
-    search_employee_profiles_v1,
-    search_employee_training_v1,
-)
-from .project_financial import (
-    get_project_financial_v1,
-    search_project_financials_v1,
-    list_project_financials_v1,
-)
-from .health import handle as handle_health
-from .health import handle_deep_health
-from .projects import get_project_status_v1
-from .project_forecasts import search_project_forecasts_v1
-from .project_master import (
-    get_project_master_v1,
-    list_project_master_v1,
-    search_project_master_v1,
-)
+from db.connection import ping_db_extended
 
-# Financials domain endpoints all live under the fresh /v1/financials/ prefix,
-# so (unlike /v1/contracts/*) there's no pre-existing broad catch-all route to
-# be shadowed by -- import order among these doesn't matter for that reason.
-from .ar_history import get_ar_history_v1, search_ar_history_v1
-from .unburdened_nonlabor import (
-    get_unburdened_nonlabor_v1,
-    search_unburdened_nonlabor_v1,
-)
-from .timesheet_history import (
-    get_timesheet_history_by_employee_v1,
-    get_timesheet_history_by_project_v1,
-    search_timesheet_history_v1,
-)
-from .voucher_history import get_voucher_history_v1, search_voucher_history_v1
-from .po_funding_detail import (
-    get_po_funding_detail_v1,
-    search_po_funding_detail_v1,
-)
-from .real_time_commitment import (
-    get_real_time_commitments_v1,
-    search_real_time_commitments_v1,
-)
-from .gl_details import get_gl_details_v1, search_gl_details_v1
-from .non_labor_detail import get_non_labor_detail_v1, search_non_labor_detail_v1
-from .financials_updated import (
-    get_financials_updated_v1,
-    search_financials_updated_v1,
-)
-from .po_open_commitment import (
-    get_po_open_commitments_v1,
-    search_po_open_commitments_v1,
-)
-from .period_target_cost_revenue import (
-    get_period_target_cost_revenue_v1,
-    search_period_target_cost_revenue_v1,
-)
-from .project_status_report import (
-    get_project_status_history_v1,
-    search_project_status_history_v1,
-)
-from .project_modifications import (
-    get_project_modifications_v1,
-    search_project_modifications_v1,
-)
-from .project_info import get_project_info_v1, search_project_info_v1
-from .project_status_detail import (
-    get_project_status_detail_v1,
-    search_project_status_detail_v1,
-)
-from .irc_census_report import (
-    get_irc_census_report_v1,
-    search_irc_census_reports_v1,
-    list_irc_census_reports_v1,
-)
 
-__all__ = [
-    "logout_handler_v1",
-    "get_okta_login_url_v1",
-    "handle_okta_login_callback_v1",
-    "get_contract_v1",
-    "search_contracts_v1",
-    "list_contracts_v1",
-    "search_employee_profiles_v1",
-    "get_employee_direct_reports_blank_v1",
-    "get_employee_direct_reports_v1",
-    "get_org_blank_v1",
-    "get_employees_by_org_v1",
-    "get_personnel_roster_v1",
-    "get_employees_by_clearance_blank_v1",
-    "get_employees_by_clearance_v1",
-    "get_employee_profile_blank_v1",
-    "get_employee_profile_v1",
-    "search_employee_training_v1",
-    "get_training_by_status_blank_v1",
-    "get_training_by_status_v1",
-    "get_training_by_org_blank_v1",
-    "get_training_by_org_v1",
-    "get_training_by_type_blank_v1",
-    "get_training_by_type_v1",
-    "get_employee_training_blank_v1",
-    "get_employee_training_v1",
-    "search_employee_certifications_v1",
-    "get_employee_certifications_blank_v1",
-    "get_employee_certifications_v1",
-    "get_certifications_by_status_blank_v1",
-    "get_certifications_by_status_v1",
-    "get_certifications_by_org_blank_v1",
-    "get_certifications_by_org_v1",
-    "get_project_status_v1",
-    "handle_health",
-    "handle_deep_health",
-    "get_agent_contract_locations_v1",
-    "search_project_forecasts_v1",
-    "get_project_financial_v1",
-    "search_project_financials_v1",
-    "list_project_financials_v1",
-    "get_project_master_v1",
-    "search_project_master_v1",
-    "list_project_master_v1",
-    "get_contract_master_v1",
-    "search_contract_master_v1",
-    "list_contract_master_v1",
-    "get_contract_modifications_v1",
-    "search_contract_modifications_v1",
-    "get_contract_program_managers_v1",
-    "search_contract_program_managers_v1",
-    "get_contract_analysis_v1",
-    "search_contract_analysis_v1",
-    "get_clm_contract_v1",
-    "search_clm_contracts_v1",
-    "list_clm_contracts_v1",
-    "get_ar_history_v1",
-    "search_ar_history_v1",
-    "get_unburdened_nonlabor_v1",
-    "search_unburdened_nonlabor_v1",
-    "get_timesheet_history_by_employee_v1",
-    "get_timesheet_history_by_project_v1",
-    "search_timesheet_history_v1",
-    "get_voucher_history_v1",
-    "search_voucher_history_v1",
-    "get_po_funding_detail_v1",
-    "search_po_funding_detail_v1",
-    "get_real_time_commitments_v1",
-    "search_real_time_commitments_v1",
-    "get_gl_details_v1",
-    "search_gl_details_v1",
-    "get_non_labor_detail_v1",
-    "search_non_labor_detail_v1",
-    "get_financials_updated_v1",
-    "search_financials_updated_v1",
-    "get_po_open_commitments_v1",
-    "search_po_open_commitments_v1",
-    "get_period_target_cost_revenue_v1",
-    "search_period_target_cost_revenue_v1",
-    "get_project_status_history_v1",
-    "search_project_status_history_v1",
-    "get_project_modifications_v1",
-    "search_project_modifications_v1",
-    "get_project_info_v1",
-    "search_project_info_v1",
-    "get_project_status_detail_v1",
-    "search_project_status_detail_v1",
-    "get_employee_profile_complete_v1",
-    "search_employee_profile_completes_v1",
-    "list_employee_profile_completes_v1",
-    "get_irc_census_report_v1",
-    "search_irc_census_reports_v1",
-    "list_irc_census_reports_v1",
-]
+def test_ping_db_extended_success(mocker):
+    """
+    Test that successful query results are correctly mapped to the response dict.
+    """
+
+    # Mock the connection context manager
+    mock_conn = MagicMock()
+    mock_cur = mock_conn.cursor.return_value.__enter__.return_value
+
+    # Simulate the tuple returned by the SQL query in ping_db_extended
+    mock_cur.fetchone.return_value = (
+        "test_db",
+        10,
+        2,
+        8,
+        0,
+        "00:00:01",
+    )
+
+    with patch("db.connection.get_db_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+
+        result = ping_db_extended()
+
+        assert result["database"] == "test_db"
+        assert result["total_connections"] == 10
+        assert result["active_queries"] == 2
+        assert "longest_running_query" in result
+
+        mock_cur.execute.assert_called_once()
+
+
+def test_ping_db_extended_no_row(mocker):
+    """
+    Test the behavior when the query executes but returns no rows.
+    """
+
+    mock_conn = MagicMock()
+    mock_cur = mock_conn.cursor.return_value.__enter__.return_value
+
+    # No row found
+    mock_cur.fetchone.return_value = None
+
+    with patch("db.connection.get_db_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+
+        result = ping_db_extended()
+
+        assert result == {"error": "No stats returned"}
+
+
+def test_ping_db_extended_exception(mocker):
+    """
+    Verify that an exception in the DB layer returns an empty dict (unhealthy).
+    """
+
+    with patch(
+        "db.connection.get_db_connection",
+        side_effect=Exception("Connection Timeout"),
+    ):
+        result = ping_db_extended()
+
+        assert result == {}
+
+
+def test_get_pool_returns_pool():
+    """
+    Test get_pool returns a connection pool.
+    """
+
+    # IMPORTANT:
+    # Import the module itself so that we reset and test the SAME module state.
+    import db.connection as conn_module
+
+    # Patch where SimpleConnectionPool is USED.
+    with patch("db.connection.SimpleConnectionPool") as mock_pool:
+
+        # Mock pool instance
+        mock_pool_instance = MagicMock()
+        mock_pool.return_value = mock_pool_instance
+
+        # Reset cached pool to force get_pool() to initialize a new one
+        conn_module._pool = None
+
+        pool = conn_module.get_pool()
+
+        assert pool is not None
+        assert pool is mock_pool_instance
+
+        # Confirm exactly one pool was created
+        mock_pool.assert_called_once()
+
+
+def test_ping_db_extended_partial_data(mocker):
+    """
+    Test handling of partial data from database query.
+    """
+
+    mock_conn = MagicMock()
+    mock_cur = mock_conn.cursor.return_value.__enter__.return_value
+
+    # Return partial data (missing some fields)
+    mock_cur.fetchone.return_value = (
+        "test_db",
+        5,
+        1,
+        None,
+        None,
+        None,
+    )
+
+    with patch("db.connection.get_db_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+
+        result = ping_db_extended()
+
+        assert result["database"] == "test_db"
+        assert result["total_connections"] == 5
+        assert result["active_queries"] == 1
+
+        mock_cur.execute.assert_called_once()
