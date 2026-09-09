@@ -1,160 +1,23 @@
 """
-V1 schema for IRC Census Report.
-
-Supports:
-- Filtering
-- Sorting
-- API aliases
-- PostgreSQL/MV uppercase column names
-- Internal lowercase repository column names
+Domain models for IRC Census Report.
 """
 
 from datetime import date
 from typing import List, Optional
 
-from core.filters import FilterContext
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from .base import V1BaseResponseModel, V1MetadataModel
+from .metadata import MetadataModel
 
 
-# =============================================================================
-# FILTER CONTEXT
-# =============================================================================
-
-IRCCENSUSREPORT_FILTER_CONTEXT = FilterContext(
-    allowed_fields={
-        "my_id": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "last_first_name": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "prir_name": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "s_empl_status_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "hire_dt": {
-            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
-        },
-        "reh_dt": {
-            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
-        },
-        "term_dt": {
-            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
-        },
-        "seniority_dt": {
-            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
-        },
-        "term_reason_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "taxble_entity_id": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "locator_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "empl_class_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "pto_accrl_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "bu_name": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "dept_num": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "detl_job_cd": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "title_desc": {
-            "operators": {"eq", "in", "contains"},
-        },
-        "mgr_name": {
-            "operators": {"eq", "in", "contains"},
-        },
-    },
-
-    allowed_sort_fields={
-        "row_id",
-        "my_id",
-        "last_first_name",
-        "prir_name",
-        "s_empl_status_cd",
-        "hire_dt",
-        "reh_dt",
-        "term_dt",
-        "seniority_dt",
-        "term_reason_cd",
-        "taxble_entity_id",
-        "locator_cd",
-        "empl_class_cd",
-        "pto_accrl_cd",
-        "bu_name",
-        "dept_num",
-        "detl_job_cd",
-        "title_desc",
-        "mgr_name",
-    },
-
-    filter_aliases={
-        "myId": "my_id",
-        "lastFirstName": "last_first_name",
-        "prirName": "prir_name",
-        "sEmplStatusCd": "s_empl_status_cd",
-        "hireDt": "hire_dt",
-        "rehDt": "reh_dt",
-        "termDt": "term_dt",
-        "seniorityDt": "seniority_dt",
-        "termReasonCd": "term_reason_cd",
-        "taxbleEntityId": "taxble_entity_id",
-        "locatorCd": "locator_cd",
-        "emplClassCd": "empl_class_cd",
-        "ptoAccrlCd": "pto_accrl_cd",
-        "buName": "bu_name",
-        "deptNum": "dept_num",
-        "detlJobCd": "detl_job_cd",
-        "titleDesc": "title_desc",
-        "mgrName": "mgr_name",
-    },
-)
-
-
-# =============================================================================
-# LEGACY SUPPORT
-# =============================================================================
-
-IRCCENSUSREPORTS_ALLOWED_FILTER_FIELDS = (
-    IRCCENSUSREPORT_FILTER_CONTEXT.allowed_fields
-)
-
-IRCCENSUSREPORTS_ALLOWED_SORT_FIELDS = (
-    IRCCENSUSREPORT_FILTER_CONTEXT.allowed_sort_fields
-)
-
-IRCCENSUSREPORTS_FILTER_ALIASES = (
-    IRCCENSUSREPORT_FILTER_CONTEXT.filter_aliases
-)
-
-
-# =============================================================================
-# RESPONSE MODEL
-# =============================================================================
-
-class V1IrcCensusReportResponseModel(BaseModel):
+class IrcCensusReportResponse(BaseModel):
     """
-    External API representation of an IRC Census Report.
+    Domain response model for a single IRC Census Report record.
 
-    The materialized view may return uppercase PostgreSQL column names
-    such as LAST_FIRST_NAME while the repository may return lowercase
-    names such as last_first_name.
-
-    AliasChoices allows both forms.
+    Supports:
+    - database/repository snake_case field names
+    - uppercase materialized-view column names
+    - camelCase API aliases
     """
 
     model_config = ConfigDict(
@@ -162,10 +25,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         from_attributes=True,
     )
 
-    # -------------------------------------------------------------------------
-    # Surrogate row identifier
-    # PostgreSQL MV column: row_id
-    # -------------------------------------------------------------------------
     row_id: Optional[int] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -175,12 +34,8 @@ class V1IrcCensusReportResponseModel(BaseModel):
             "rowId",
         ),
         serialization_alias="rowId",
-        description="Surrogate key used for deterministic pagination.",
     )
 
-    # -------------------------------------------------------------------------
-    # MY_ID
-    # -------------------------------------------------------------------------
     my_id: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -191,9 +46,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="myId",
     )
 
-    # -------------------------------------------------------------------------
-    # LAST_FIRST_NAME
-    # -------------------------------------------------------------------------
     last_first_name: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -204,9 +56,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="lastFirstName",
     )
 
-    # -------------------------------------------------------------------------
-    # PRIR_NAME
-    # -------------------------------------------------------------------------
     prir_name: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -217,9 +66,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="prirName",
     )
 
-    # -------------------------------------------------------------------------
-    # S_EMPL_STATUS_CD
-    # -------------------------------------------------------------------------
     s_empl_status_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -230,9 +76,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="sEmplStatusCd",
     )
 
-    # -------------------------------------------------------------------------
-    # HIRE_DT
-    # -------------------------------------------------------------------------
     hire_dt: Optional[date] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -243,9 +86,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="hireDt",
     )
 
-    # -------------------------------------------------------------------------
-    # REH_DT
-    # -------------------------------------------------------------------------
     reh_dt: Optional[date] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -256,9 +96,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="rehDt",
     )
 
-    # -------------------------------------------------------------------------
-    # TERM_DT
-    # -------------------------------------------------------------------------
     term_dt: Optional[date] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -269,9 +106,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="termDt",
     )
 
-    # -------------------------------------------------------------------------
-    # SENIORITY_DT
-    # -------------------------------------------------------------------------
     seniority_dt: Optional[date] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -282,9 +116,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="seniorityDt",
     )
 
-    # -------------------------------------------------------------------------
-    # TERM_REASON_CD
-    # -------------------------------------------------------------------------
     term_reason_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -295,10 +126,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="termReasonCd",
     )
 
-    # -------------------------------------------------------------------------
-    # TAXBLE_ENTITY_ID
-    # Keep spelling exactly as it exists in the MV.
-    # -------------------------------------------------------------------------
     taxble_entity_id: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -309,9 +136,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="taxbleEntityId",
     )
 
-    # -------------------------------------------------------------------------
-    # LOCATOR_CD
-    # -------------------------------------------------------------------------
     locator_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -322,9 +146,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="locatorCd",
     )
 
-    # -------------------------------------------------------------------------
-    # EMPL_CLASS_CD
-    # -------------------------------------------------------------------------
     empl_class_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -335,9 +156,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="emplClassCd",
     )
 
-    # -------------------------------------------------------------------------
-    # PTO_ACCRL_CD
-    # -------------------------------------------------------------------------
     pto_accrl_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -348,9 +166,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="ptoAccrlCd",
     )
 
-    # -------------------------------------------------------------------------
-    # BU_NAME
-    # -------------------------------------------------------------------------
     bu_name: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -361,9 +176,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="buName",
     )
 
-    # -------------------------------------------------------------------------
-    # DEPT_NUM
-    # -------------------------------------------------------------------------
     dept_num: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -374,9 +186,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="deptNum",
     )
 
-    # -------------------------------------------------------------------------
-    # DETL_JOB_CD
-    # -------------------------------------------------------------------------
     detl_job_cd: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -387,9 +196,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="detlJobCd",
     )
 
-    # -------------------------------------------------------------------------
-    # TITLE_DESC
-    # -------------------------------------------------------------------------
     title_desc: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -400,9 +206,6 @@ class V1IrcCensusReportResponseModel(BaseModel):
         serialization_alias="titleDesc",
     )
 
-    # -------------------------------------------------------------------------
-    # MGR_NAME
-    # -------------------------------------------------------------------------
     mgr_name: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -414,34 +217,37 @@ class V1IrcCensusReportResponseModel(BaseModel):
     )
 
 
-# =============================================================================
-# LIST RESPONSE
-# =============================================================================
-
-class V1IrcCensusReportListResponseModel(V1BaseResponseModel):
+class IrcCensusReportSearchServiceResponse(BaseModel):
     """
-    Response model used by list/search IRC Census Report endpoints.
+    Internal domain-level search/list response.
+
+    This is used between repository/service/handler layers.
     """
 
-    metadata: V1MetadataModel
-    data: List[V1IrcCensusReportResponseModel]
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+        from_attributes=True,
+    )
+
+    items: List[IrcCensusReportResponse]
+    metadata: MetadataModel
 
 
-# =============================================================================
-# DETAIL RESPONSE
-# =============================================================================
-
-class V1IrcCensusReportDetailResponseModel(V1BaseResponseModel):
+class IrcCensusReportDetailServiceResponse(BaseModel):
     """
-    Response model used by the IRC Census Report detail endpoint.
+    Internal domain-level detail response.
+
+    Kept separate so the handler/service can use a detail-specific type
+    while still returning a list when LAST_FIRST_NAME is not guaranteed
+    to be unique.
     """
 
-    metadata: V1MetadataModel
-    data: List[V1IrcCensusReportResponseModel]
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        populate_by_name=True,
+        from_attributes=True,
+    )
 
-
-# =============================================================================
-# REUSABLE FILTER CONTEXT
-# =============================================================================
-
-irc_census_report_filter_context = IRCCENSUSREPORT_FILTER_CONTEXT
+    items: List[IrcCensusReportResponse]
+    metadata: MetadataModel
