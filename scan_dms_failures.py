@@ -1,13 +1,11 @@
-@"
-protocol=https
-host=ccoe-gitlab.hii-tsd.com
-
-"@ | git credential-manager erase
-
-git fetch origin
-
-
-git pull origin main
-
-
-git switch -c jay-irc_census_report_clean
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/db/repositories/irc_census_report_repo.py
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/domain/models/irc_census_report.py
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/domain/services/irc_census_report_service.py
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/v1/handlers/__init__.py
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/v1/handlers/irc_census_report.py
+git restore --source jay-irc_census_report -- main-function/mt-dm-lambda-src/v1/schemas/irc_census_reports.py
+git restore --source jay-irc_census_report -- main-function/tests/unit/db/test_irc_census_report_repo.py
+git restore --source jay-irc_census_report -- main-function/tests/unit/domain/models/test_irc_census_report.py
+git restore --source jay-irc_census_report -- main-function/tests/unit/domain/services/test_irc_census_report_service.py
+git restore --source jay-irc_census_report -- main-function/tests/unit/test_db_connection.py
+git restore --source jay-irc_census_report -- main-function/tests/unit/v1/test_irc_census_report.py
