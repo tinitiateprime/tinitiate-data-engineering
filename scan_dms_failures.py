@@ -1,360 +1,305 @@
-from unittest.mock import MagicMock, patch
+"""
+Auto-generated V1 schema for IrcCensusReport
+"""
 
-import pytest
+from datetime import date
+from typing import Any, List, Optional
 
-from db.repositories import irc_census_report_repo
-from v1.schemas import (
-    FiltersEnvelope,
-    PaginationModel,
-    SortModel,
+from core.filters import FilterContext
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+from .base import V1BaseResponseModel, V1MetadataModel
+
+
+# =============================================================================
+# Allowed fields & operators, sort fields, and filter aliases
+# =============================================================================
+
+IRCCENSUSREPORT_FILTER_CONTEXT = FilterContext(
+    allowed_fields={
+        "my_id": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "last_first_name": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "prir_name": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "s_empl_status_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "hire_dt": {
+            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
+        },
+        "reh_dt": {
+            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
+        },
+        "term_dt": {
+            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
+        },
+        "seniority_dt": {
+            "operators": {"eq", "gt", "gte", "lt", "lte", "between"},
+        },
+        "term_reason_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "taxble_entity_id": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "locator_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "empl_class_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "pto_accrl_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "bu_name": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "dept_num": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "detl_job_cd": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "title_desc": {
+            "operators": {"eq", "in", "contains"},
+        },
+        "mgr_name": {
+            "operators": {"eq", "in", "contains"},
+        },
+    },
+    allowed_sort_fields={
+        "row_id",
+        "my_id",
+        "last_first_name",
+        "prir_name",
+        "s_empl_status_cd",
+        "hire_dt",
+        "reh_dt",
+        "term_dt",
+        "seniority_dt",
+        "term_reason_cd",
+        "taxble_entity_id",
+        "locator_cd",
+        "empl_class_cd",
+        "pto_accrl_cd",
+        "bu_name",
+        "dept_num",
+        "detl_job_cd",
+        "title_desc",
+        "mgr_name",
+    },
+    filter_aliases={
+        "myId": "my_id",
+        "lastFirstName": "last_first_name",
+        "prirName": "prir_name",
+        "sEmplStatusCd": "s_empl_status_cd",
+        "hireDt": "hire_dt",
+        "rehDt": "reh_dt",
+        "termDt": "term_dt",
+        "seniorityDt": "seniority_dt",
+        "termReasonCd": "term_reason_cd",
+        "taxbleEntityId": "taxble_entity_id",
+        "locatorCd": "locator_cd",
+        "emplClassCd": "empl_class_cd",
+        "ptoAccrlCd": "pto_accrl_cd",
+        "buName": "bu_name",
+        "deptNum": "dept_num",
+        "detlJobCd": "detl_job_cd",
+        "titleDesc": "title_desc",
+        "mgrName": "mgr_name",
+    },
 )
 
 
-# ============================================================
-# FIXTURES
-# ============================================================
+# =============================================================================
+# Legacy constants
+# =============================================================================
 
-@pytest.fixture
-def mock_plan():
-    plan = MagicMock()
-    plan.sql = "SELECT * FROM irc_census_report_mv"
-    plan.params = []
-    return plan
+IRCCENSUSREPORTS_ALLOWED_FILTER_FIELDS = (
+    IRCCENSUSREPORT_FILTER_CONTEXT.allowed_fields
+)
+
+IRCCENSUSREPORTS_ALLOWED_SORT_FIELDS = (
+    IRCCENSUSREPORT_FILTER_CONTEXT.allowed_sort_fields
+)
+
+IRCCENSUSREPORTS_FILTER_ALIASES = (
+    IRCCENSUSREPORT_FILTER_CONTEXT.filter_aliases
+)
 
 
-# ============================================================
-# GET IRC CENSUS REPORTS - SUCCESS
-# ============================================================
+# =============================================================================
+# Response Model
+# =============================================================================
 
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_reports_success(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
+class V1IrcCensusReportResponseModel(BaseModel):
+    """
+    External API representation of an IrcCensusReport.
+    """
 
-    mock_execute.return_value = {
-        "items": [
-            {
-                "row_id": "1001",
-                "last_first_name": "Doe, Jane",
-            }
-        ],
-        "page": {
-            "cursor": None,
-            "has_more": False,
-        },
-    }
-
-    filters = FiltersEnvelope(filters={})
-    sort = SortModel()
-    page = PaginationModel(limit=10)
-
-    result = irc_census_report_repo.get_irc_census_reports(
-        filters=filters,
-        sort=sort,
-        page=page,
-        columns=None,
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True,
     )
 
-    assert isinstance(result, dict)
-    assert len(result["items"]) == 1
-    assert result["items"][0]["row_id"] == "1001"
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# GET IRC CENSUS REPORTS - EMPTY
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_reports_empty(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
-
-    mock_execute.return_value = {
-        "items": [],
-        "page": {
-            "cursor": None,
-            "has_more": False,
-        },
-    }
-
-    result = irc_census_report_repo.get_irc_census_reports(
-        filters=None,
-        sort=None,
-        page=PaginationModel(limit=10),
-        columns=None,
+    # -------------------------------------------------------------------------
+    # IMPORTANT:
+    # DB/MV row_id is integer.
+    # Keep this as Optional[int], NOT str.
+    # row_id is used for stable/keyset pagination.
+    # -------------------------------------------------------------------------
+    row_id: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "rowid",
+            "row_id",
+        ),
+        serialization_alias="rowid",
+        description="Surrogate key for deterministic pagination.",
     )
 
-    assert isinstance(result, dict)
-    assert result["items"] == []
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# GET IRC CENSUS REPORT BY LAST_FIRST_NAME - FOUND
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_report_by_id_found(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
-
-    mock_execute.return_value = {
-        "items": [
-            {
-                "row_id": "1001",
-                "last_first_name": "Doe, Jane",
-            }
-        ]
-    }
-
-    filters = FiltersEnvelope(filters={})
-    sort = SortModel()
-    page = PaginationModel(limit=10)
-    columns = None
-
-    result = irc_census_report_repo.get_irc_census_report_by_id(
-        last_first_name="Doe, Jane",
-        filters=filters,
-        page=page,
-        columns=columns,
-        sort=sort,
+    my_id: Optional[str] = Field(
+        default=None,
+        validation_alias="my_id",
+        serialization_alias="myId",
     )
 
-    assert isinstance(result, dict)
-    assert len(result["items"]) == 1
-    assert result["items"][0]["last_first_name"] == "Doe, Jane"
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# GET IRC CENSUS REPORT BY LAST_FIRST_NAME - NOT FOUND
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_report_by_id_not_found(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
-
-    mock_execute.return_value = {
-        "items": []
-    }
-
-    filters = FiltersEnvelope(filters={})
-    sort = SortModel()
-    page = PaginationModel(limit=10)
-    columns = None
-
-    result = irc_census_report_repo.get_irc_census_report_by_id(
-        last_first_name="Missing, Person",
-        filters=filters,
-        page=page,
-        columns=columns,
-        sort=sort,
+    last_first_name: Optional[str] = Field(
+        default=None,
+        validation_alias="last_first_name",
+        serialization_alias="lastFirstName",
     )
 
-    assert isinstance(result, dict)
-    assert result["items"] == []
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# FORMAT PAGINATED RESPONSE - HAS MORE
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.encode_cursor")
-def test_format_paginated_response_has_more(
-    mock_encode_cursor,
-):
-    mock_encode_cursor.return_value = "encoded-next-cursor"
-
-    items = [
-        {
-            "row_id": "1001",
-            "last_first_name": "Doe, Jane",
-            "total_count_hidden": 2,
-        },
-        {
-            "row_id": "1002",
-            "last_first_name": "Smith, John",
-            "total_count_hidden": 2,
-        },
-    ]
-
-    result = irc_census_report_repo._format_paginated_response(
-        items,
-        limit=1,
+    prir_name: Optional[str] = Field(
+        default=None,
+        validation_alias="prir_name",
+        serialization_alias="prirName",
     )
 
-    assert len(result["items"]) == 1
-    assert result["page"]["has_more"] is True
-    assert result["page"]["cursor"] == "encoded-next-cursor"
-
-    assert "total_count_hidden" not in result["items"][0]
-
-    # row_id stays here because it is the pagination/keyset cursor
-    mock_encode_cursor.assert_called_once_with("1001")
-
-
-# ============================================================
-# FORMAT PAGINATED RESPONSE - NO MORE
-# ============================================================
-
-def test_format_paginated_response_no_more():
-    items = [
-        {
-            "row_id": "1001",
-            "last_first_name": "Doe, Jane",
-            "total_count_hidden": 1,
-        }
-    ]
-
-    result = irc_census_report_repo._format_paginated_response(
-        items,
-        limit=10,
+    s_empl_status_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="s_empl_status_cd",
+        serialization_alias="sEmplStatusCd",
     )
 
-    assert len(result["items"]) == 1
-    assert result["page"]["has_more"] is False
-    assert result["page"]["cursor"] is None
-
-    assert "total_count_hidden" not in result["items"][0]
-
-
-# ============================================================
-# GET IRC CENSUS REPORTS - DICT FILTERS
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_reports_dict_filters(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
-    mock_execute.return_value = {
-        "items": []
-    }
-
-    filters = {}
-
-    result = irc_census_report_repo.get_irc_census_reports(
-        filters=filters,
-        sort=SortModel(),
-        page=PaginationModel(limit=10),
-        columns=None,
+    hire_dt: Optional[date] = Field(
+        default=None,
+        validation_alias="hire_dt",
+        serialization_alias="hireDt",
     )
 
-    assert isinstance(result, dict)
-    assert result["items"] == []
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# GET IRC CENSUS REPORT BY LAST_FIRST_NAME - NONE FILTERS
-# ============================================================
-
-@patch("db.repositories.irc_census_report_repo.execute_query")
-@patch("db.repositories.irc_census_report_repo._builder.get_list_plan")
-def test_get_irc_census_report_by_id_none_filters(
-    mock_get_plan,
-    mock_execute,
-    mock_plan,
-):
-    mock_get_plan.return_value = mock_plan
-
-    mock_execute.return_value = {
-        "items": [
-            {
-                "row_id": "1001",
-                "last_first_name": "Doe, Jane",
-            }
-        ]
-    }
-
-    sort = SortModel()
-    page = PaginationModel(limit=10)
-    columns = None
-
-    result = irc_census_report_repo.get_irc_census_report_by_id(
-        last_first_name="Doe, Jane",
-        filters=None,
-        page=page,
-        columns=columns,
-        sort=sort,
+    reh_dt: Optional[date] = Field(
+        default=None,
+        validation_alias="reh_dt",
+        serialization_alias="rehDt",
     )
 
-    assert isinstance(result, dict)
-    assert len(result["items"]) == 1
-    assert result["items"][0]["last_first_name"] == "Doe, Jane"
-
-    mock_get_plan.assert_called_once()
-    mock_execute.assert_called_once()
-
-
-# ============================================================
-# GET IRC CENSUS REPORT BY LAST_FIRST_NAME
-# RECURSIVE FILTER BRANCH
-# ============================================================
-
-def test_get_irc_census_report_by_id_recursive_filter_branch():
-    class RecursiveFilterContainer:
-        def __init__(self):
-            self.filters = []
-
-    recursive_filters = RecursiveFilterContainer()
-
-    filters_envelope = FiltersEnvelope.model_construct(
-        filters=recursive_filters,
+    term_dt: Optional[date] = Field(
+        default=None,
+        validation_alias="term_dt",
+        serialization_alias="termDt",
     )
 
-    sort = SortModel()
-    page = PaginationModel(limit=10)
-    columns = None
+    seniority_dt: Optional[date] = Field(
+        default=None,
+        validation_alias="seniority_dt",
+        serialization_alias="seniorityDt",
+    )
 
-    try:
-        irc_census_report_repo.get_irc_census_report_by_id(
-            last_first_name="Doe, Jane",
-            filters=filters_envelope,
-            page=page,
-            columns=columns,
-            sort=sort,
-        )
-    except Exception:
-        # This test only exercises the recursive-filter branch.
-        # We are not testing actual DB execution here.
-        pass
+    term_reason_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="term_reason_cd",
+        serialization_alias="termReasonCd",
+    )
 
-    assert len(recursive_filters.filters) == 1
+    taxble_entity_id: Optional[str] = Field(
+        default=None,
+        validation_alias="taxble_entity_id",
+        serialization_alias="taxbleEntityId",
+    )
 
-    added_rule = recursive_filters.filters[0]
+    locator_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="locator_cd",
+        serialization_alias="locatorCd",
+    )
 
-    assert added_rule.field == "last_first_name"
-    assert added_rule.ops.eq == "Doe, Jane"
+    empl_class_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="empl_class_cd",
+        serialization_alias="emplClassCd",
+    )
+
+    pto_accrl_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="pto_accrl_cd",
+        serialization_alias="ptoAccrlCd",
+    )
+
+    bu_name: Optional[str] = Field(
+        default=None,
+        validation_alias="bu_name",
+        serialization_alias="buName",
+    )
+
+    dept_num: Optional[str] = Field(
+        default=None,
+        validation_alias="dept_num",
+        serialization_alias="deptNum",
+    )
+
+    detl_job_cd: Optional[str] = Field(
+        default=None,
+        validation_alias="detl_job_cd",
+        serialization_alias="detlJobCd",
+    )
+
+    title_desc: Optional[str] = Field(
+        default=None,
+        validation_alias="title_desc",
+        serialization_alias="titleDesc",
+    )
+
+    mgr_name: Optional[str] = Field(
+        default=None,
+        validation_alias="mgr_name",
+        serialization_alias="mgrName",
+    )
+
+
+# =============================================================================
+# List Response
+# =============================================================================
+
+class V1IrcCensusReportListResponseModel(V1BaseResponseModel):
+    """
+    Response returned for IRC Census list/search requests.
+    """
+
+    metadata: V1MetadataModel
+    data: List[V1IrcCensusReportResponseModel]
+
+
+# =============================================================================
+# Detail Response
+# =============================================================================
+
+class V1IrcCensusReportDetailResponseModel(V1BaseResponseModel):
+    """
+    Response returned for a single IRC Census employee lookup.
+    """
+
+    metadata: V1MetadataModel
+    data: List[V1IrcCensusReportResponseModel]
+
+
+# =============================================================================
+# Reusable filter context
+# =============================================================================
+
+irc_census_report_filter_context = IRCCENSUSREPORT_FILTER_CONTEXT
