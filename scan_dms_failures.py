@@ -277,3 +277,7 @@ def list_irc_census_reports_v1(event, context):
     return response.model_dump(
         by_alias=True
     )
+
+
+
+python -m pytest tests -k "irc_census" -v
