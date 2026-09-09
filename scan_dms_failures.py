@@ -9,3 +9,9 @@ git restore --source jay-irc_census_report -- main-function/tests/unit/domain/mo
 git restore --source jay-irc_census_report -- main-function/tests/unit/domain/services/test_irc_census_report_service.py
 git restore --source jay-irc_census_report -- main-function/tests/unit/test_db_connection.py
 git restore --source jay-irc_census_report -- main-function/tests/unit/v1/test_irc_census_report.py
+
+
+
+git add .
+git commit -m "Add IRC census report API"
+git push -u origin jay-irc_census_report_v1
