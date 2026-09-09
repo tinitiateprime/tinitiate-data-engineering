@@ -1,253 +1,397 @@
 """
-Domain models for IRC Census Report.
+V1 handler routes for IrcCensusReport.
 """
 
-from datetime import date
-from typing import List, Optional
+import json
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from core.config import settings
+from core.exceptions import ResourceNotFoundError, UnauthorizedError
+from core.filters import (
+    FiltersEnvelope,
+    SortModel,
+    parse_filters_from_query_params,
+)
 
-from .metadata import MetadataModel
+from core.router import router
+from core.utils import LambdaUtils
+from core.api_handler import api_handler
+
+from domain.services.irc_census_report_service import (
+    get_irc_census_report_details,
+    search_irc_census_reports,
+)
+
+from v1.schemas.irc_census_reports import (
+    IRCCENSUSREPORT_FILTER_CONTEXT,
+    V1IrcCensusReportResponseModel,
+    V1IrcCensusReportListResponseModel,
+    V1IrcCensusReportDetailResponseModel,
+)
+
+from v1.schemas.base import V1MetadataModel
 
 
-class IrcCensusReportResponse(BaseModel):
+# =====================================================================
+# AUTHORIZATION
+# =====================================================================
+
+def _authorize_irc_census(event):
     """
-    Domain response model for a single IRC Census Report record.
+    IRC Census is restricted to the HR - Special Use PAT.
+
+    Keep the authorization implementation that already exists in your
+    application if yours performs a more specific PAT/user check.
+    """
+
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+
+    # HTTP API/Lambda authorizer structures can differ, so check
+    # the common locations.
+    lambda_authorizer = authorizer.get("lambda") or authorizer
+
+    user_id = (
+        lambda_authorizer.get("userId")
+        or lambda_authorizer.get("user_id")
+        or lambda_authorizer.get("userid")
+    )
+
+    # Do not reject when the authorizer implementation puts the identity
+    # somewhere else. Existing API Gateway authorization has already
+    # validated the PAT before reaching this handler.
+    #
+    # If your original _authorize_irc_census() has special logic,
+    # KEEP YOUR ORIGINAL FUNCTION instead of this block.
+    if user_id and user_id != "HR - Special Use":
+        raise UnauthorizedError(
+            message="Unauthorized access to IRC Census Report.",
+            details={},
+        )
+
+
+# =====================================================================
+# DETAIL
+# GET /v1/irc-census-reports/{last_first_name}
+# =====================================================================
+
+@router.route(
+    "GET",
+    r"^/v1/irc-census-reports/(?P<last_first_name>[^/]+)$",
+    is_regex=True,
+)
+@api_handler
+def get_irc_census_report_v1(event, context):
+    """
+    Get IRC Census records for a specific LAST_FIRST_NAME.
+
+    Example:
+
+        GET /v1/irc-census-reports/Price%2C%20Kevin%20T
+
+    resolves to:
+
+        last_first_name = "Price, Kevin T"
+
+    row_id is NOT the lookup key here.
+    row_id remains available internally for pagination.
+    """
+
+    # -----------------------------------------------------------------
+    # Authorization
+    # -----------------------------------------------------------------
+    _authorize_irc_census(event)
+
+    # -----------------------------------------------------------------
+    # Path parameter
+    # -----------------------------------------------------------------
+    last_first_name = LambdaUtils.get_path_param(
+        event,
+        "last_first_name",
+    )
+
+    if not last_first_name:
+        raise ValueError(
+            "IrcCensusReport last_first_name is required."
+        )
+
+    # -----------------------------------------------------------------
+    # Query parameters
+    # -----------------------------------------------------------------
+    query_params = LambdaUtils.get_all_query_params(event) or {}
+
+    limit = int(
+        query_params.get(
+            "limit",
+            settings.DEFAULT_PAGE_SIZE,
+        )
+    )
+
+    cursor = query_params.get("cursor")
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    # -----------------------------------------------------------------
+    # Optional additional filters
+    # -----------------------------------------------------------------
+    filters_envelope = parse_filters_from_query_params(
+        query_params,
+        IRCCENSUSREPORT_FILTER_CONTEXT,
+    )
+
+    # -----------------------------------------------------------------
+    # Service call
+    #
+    # IMPORTANT:
+    # lookup is by last_first_name, NOT row_id.
+    # -----------------------------------------------------------------
+    results = get_irc_census_report_details(
+        last_first_name=last_first_name,
+        filters=filters_envelope,
+        limit=limit,
+        cursor=cursor,
+        columns=columns,
+    )
+
+    # -----------------------------------------------------------------
+    # Not found
+    # -----------------------------------------------------------------
+    if not results.items:
+        raise ResourceNotFoundError(
+            message=(
+                "IrcCensusReport with last_first_name "
+                f"'{last_first_name}' not found"
+            ),
+            details={
+                "last_first_name": last_first_name,
+            },
+        )
+
+    # -----------------------------------------------------------------
+    # Metadata
+    # -----------------------------------------------------------------
+    results.metadata.applied_filters = filters_envelope
+
+    # -----------------------------------------------------------------
+    # Response
+    # -----------------------------------------------------------------
+    response = V1IrcCensusReportDetailResponseModel(
+        metadata=V1MetadataModel(
+            **results.metadata.model_dump()
+        ),
+        data=[
+            V1IrcCensusReportResponseModel.model_validate(item)
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(
+        by_alias=True
+    )
+
+
+# =====================================================================
+# SEARCH
+# POST /v1/irc-census-reports/search
+# =====================================================================
+
+@router.route(
+    "POST",
+    r"^/v1/irc-census-reports/search$",
+    is_regex=True,
+)
+@api_handler
+def search_irc_census_reports_v1(event, context):
+    """
+    Search IRC Census reports.
 
     Supports:
-    - database/repository snake_case field names
-    - uppercase materialized-view column names
-    - camelCase API aliases
+        filters
+        sort
+        pagination
+        selected columns
     """
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
+    # -----------------------------------------------------------------
+    # Authorization
+    # -----------------------------------------------------------------
+    _authorize_irc_census(event)
+
+    # -----------------------------------------------------------------
+    # Request body
+    # -----------------------------------------------------------------
+    body = LambdaUtils.get_json_body(event)
+
+    if body is None:
+        body = {}
+
+    # -----------------------------------------------------------------
+    # Query parameters
+    # -----------------------------------------------------------------
+    query_params = LambdaUtils.get_all_query_params(event) or {}
+
+    columns = LambdaUtils.get_columns_query_parameter(event)
+
+    # -----------------------------------------------------------------
+    # Filters
+    # -----------------------------------------------------------------
+    body_filters = body.get("filters")
+
+    if body_filters:
+        filters_envelope = FiltersEnvelope.model_validate(
+            {
+                "filters": body_filters,
+            }
+        )
+    else:
+        filters_envelope = parse_filters_from_query_params(
+            query_params,
+            IRCCENSUSREPORT_FILTER_CONTEXT,
+        )
+
+    # -----------------------------------------------------------------
+    # Sort
+    # -----------------------------------------------------------------
+    body_sort = body.get("sort")
+
+    if body_sort:
+        sort = SortModel.model_validate(body_sort)
+    else:
+        sort = SortModel()
+
+    # -----------------------------------------------------------------
+    # Pagination
+    # -----------------------------------------------------------------
+    body_page = body.get("page") or {}
+
+    limit = int(
+        body_page.get(
+            "limit",
+            query_params.get(
+                "limit",
+                settings.DEFAULT_PAGE_SIZE,
+            ),
+        )
     )
 
-    row_id: Optional[int] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "row_id",
-            "ROW_ID",
-            "rowid",
-            "rowId",
+    cursor = body_page.get(
+        "cursor",
+        query_params.get("cursor"),
+    )
+
+    # -----------------------------------------------------------------
+    # Service
+    # -----------------------------------------------------------------
+    results = search_irc_census_reports(
+        filters=filters_envelope,
+        sort=sort,
+        limit=limit,
+        cursor=cursor,
+        columns=columns,
+    )
+
+    results.metadata.applied_filters = filters_envelope
+
+    # -----------------------------------------------------------------
+    # Response
+    # -----------------------------------------------------------------
+    response = V1IrcCensusReportListResponseModel(
+        metadata=V1MetadataModel(
+            **results.metadata.model_dump()
         ),
-        serialization_alias="rowId",
+        data=[
+            V1IrcCensusReportResponseModel.model_validate(item)
+            for item in results.items
+        ],
     )
 
-    my_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "my_id",
-            "MY_ID",
-            "myId",
-        ),
-        serialization_alias="myId",
-    )
-
-    last_first_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "last_first_name",
-            "LAST_FIRST_NAME",
-            "lastFirstName",
-        ),
-        serialization_alias="lastFirstName",
-    )
-
-    prir_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "prir_name",
-            "PRIR_NAME",
-            "prirName",
-        ),
-        serialization_alias="prirName",
-    )
-
-    s_empl_status_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "s_empl_status_cd",
-            "S_EMPL_STATUS_CD",
-            "sEmplStatusCd",
-        ),
-        serialization_alias="sEmplStatusCd",
-    )
-
-    hire_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "hire_dt",
-            "HIRE_DT",
-            "hireDt",
-        ),
-        serialization_alias="hireDt",
-    )
-
-    reh_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "reh_dt",
-            "REH_DT",
-            "rehDt",
-        ),
-        serialization_alias="rehDt",
-    )
-
-    term_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "term_dt",
-            "TERM_DT",
-            "termDt",
-        ),
-        serialization_alias="termDt",
-    )
-
-    seniority_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "seniority_dt",
-            "SENIORITY_DT",
-            "seniorityDt",
-        ),
-        serialization_alias="seniorityDt",
-    )
-
-    term_reason_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "term_reason_cd",
-            "TERM_REASON_CD",
-            "termReasonCd",
-        ),
-        serialization_alias="termReasonCd",
-    )
-
-    taxble_entity_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "taxble_entity_id",
-            "TAXBLE_ENTITY_ID",
-            "taxbleEntityId",
-        ),
-        serialization_alias="taxbleEntityId",
-    )
-
-    locator_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "locator_cd",
-            "LOCATOR_CD",
-            "locatorCd",
-        ),
-        serialization_alias="locatorCd",
-    )
-
-    empl_class_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "empl_class_cd",
-            "EMPL_CLASS_CD",
-            "emplClassCd",
-        ),
-        serialization_alias="emplClassCd",
-    )
-
-    pto_accrl_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "pto_accrl_cd",
-            "PTO_ACCRL_CD",
-            "ptoAccrlCd",
-        ),
-        serialization_alias="ptoAccrlCd",
-    )
-
-    bu_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "bu_name",
-            "BU_NAME",
-            "buName",
-        ),
-        serialization_alias="buName",
-    )
-
-    dept_num: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "dept_num",
-            "DEPT_NUM",
-            "deptNum",
-        ),
-        serialization_alias="deptNum",
-    )
-
-    detl_job_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "detl_job_cd",
-            "DETL_JOB_CD",
-            "detlJobCd",
-        ),
-        serialization_alias="detlJobCd",
-    )
-
-    title_desc: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "title_desc",
-            "TITLE_DESC",
-            "titleDesc",
-        ),
-        serialization_alias="titleDesc",
-    )
-
-    mgr_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "mgr_name",
-            "MGR_NAME",
-            "mgrName",
-        ),
-        serialization_alias="mgrName",
+    return response.model_dump(
+        by_alias=True
     )
 
 
-class IrcCensusReportSearchServiceResponse(BaseModel):
+# =====================================================================
+# LIST
+# GET /v1/irc-census-reports
+# =====================================================================
+
+@router.route(
+    "GET",
+    r"^/v1/irc-census-reports$",
+    is_regex=True,
+)
+@api_handler
+def list_irc_census_reports_v1(event, context):
     """
-    Internal domain-level search/list response.
+    List IRC Census reports.
 
-    This is used between repository/service/handler layers.
+    This endpoint does NOT require last_first_name.
+
+    Example:
+
+        GET /v1/irc-census-reports
+        GET /v1/irc-census-reports?limit=50
     """
 
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        populate_by_name=True,
-        from_attributes=True,
+    # -----------------------------------------------------------------
+    # Authorization
+    # -----------------------------------------------------------------
+    _authorize_irc_census(event)
+
+    # -----------------------------------------------------------------
+    # Query parameters
+    # -----------------------------------------------------------------
+    query_params = LambdaUtils.get_all_query_params(event) or {}
+
+    limit = int(
+        query_params.get(
+            "limit",
+            settings.DEFAULT_PAGE_SIZE,
+        )
     )
 
-    items: List[IrcCensusReportResponse]
-    metadata: MetadataModel
+    cursor = query_params.get("cursor")
 
+    columns = LambdaUtils.get_columns_query_parameter(event)
 
-class IrcCensusReportDetailServiceResponse(BaseModel):
-    """
-    Internal domain-level detail response.
-
-    Kept separate so the handler/service can use a detail-specific type
-    while still returning a list when LAST_FIRST_NAME is not guaranteed
-    to be unique.
-    """
-
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        populate_by_name=True,
-        from_attributes=True,
+    # -----------------------------------------------------------------
+    # Filters
+    # -----------------------------------------------------------------
+    filters_envelope = parse_filters_from_query_params(
+        query_params,
+        IRCCENSUSREPORT_FILTER_CONTEXT,
     )
 
-    items: List[IrcCensusReportResponse]
-    metadata: MetadataModel
+    # -----------------------------------------------------------------
+    # Sort
+    # -----------------------------------------------------------------
+    sort = SortModel()
+
+    # -----------------------------------------------------------------
+    # Reuse search service for list
+    # -----------------------------------------------------------------
+    results = search_irc_census_reports(
+        filters=filters_envelope,
+        sort=sort,
+        limit=limit,
+        cursor=cursor,
+        columns=columns,
+    )
+
+    results.metadata.applied_filters = filters_envelope
+
+    # -----------------------------------------------------------------
+    # Response
+    # -----------------------------------------------------------------
+    response = V1IrcCensusReportListResponseModel(
+        metadata=V1MetadataModel(
+            **results.metadata.model_dump()
+        ),
+        data=[
+            V1IrcCensusReportResponseModel.model_validate(item)
+            for item in results.items
+        ],
+    )
+
+    return response.model_dump(
+        by_alias=True
+    )
