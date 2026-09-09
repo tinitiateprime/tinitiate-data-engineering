@@ -2,10 +2,7 @@
 V1 handler routes for IrcCensusReport
 """
 
-import hashlib
-import hmac
 import json
-import os
 
 from core.config import settings
 from core.exceptions import ResourceNotFoundError, UnauthorizedError
@@ -32,106 +29,42 @@ from v1.schemas.irc_census_reports import (
 
 
 # =============================================================================
-# IRC CENSUS REPORT - DEDICATED PAT AUTHORIZATION
+# IRC CENSUS REPORT AUTHORIZATION
 # =============================================================================
 
-def _authorize_irc_census_pat(event):
+IRC_CENSUS_ALLOWED_USER = "HR - Special Use"
+
+
+def _authorize_irc_census(event):
     """
-    Restrict IRC Census Report endpoints to exactly one dedicated PAT.
+    Restrict IRC Census Report endpoints to the dedicated
+    HR - Special Use PAT identity.
 
-    Normal PAT authentication is already performed by the API Gateway
-    Lambda authorizer.
+    Normal PAT authentication happens in the API Gateway Lambda Authorizer.
 
-    This additional check ensures that only the specifically configured
-    IRC Census PAT can access these endpoints.
+    The authorizer validates the PAT against DynamoDB and passes the userId
+    to the main Lambda through requestContext.authorizer.lambda.
 
-    The clear-text PAT is never stored in Lambda configuration.
+    Only:
+        userId = "HR - Special Use"
 
-    Environment variable required:
-
-        IRC_CENSUS_PAT_HASH=<SHA256 hash of permitted PAT>
+    is permitted to access IRC Census Report endpoints.
     """
 
-    headers = event.get("headers") or {}
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
 
-    # API Gateway can provide header keys with different casing.
-    auth_header = (
-        headers.get("authorization")
-        or headers.get("Authorization")
-        or ""
-    ).strip()
+    # HTTP API Lambda Authorizer context.
+    lambda_context = authorizer.get("lambda") or {}
 
-    if not auth_header:
-        raise UnauthorizedError(
-            message="Forbidden",
-            status_code=403,
-        )
+    user_id = lambda_context.get("userId")
 
-    parts = auth_header.split()
+    # Defensive fallback in case userId is presented directly
+    # under requestContext.authorizer in another event format.
+    if not user_id:
+        user_id = authorizer.get("userId")
 
-    # Support:
-    # Authorization: Bearer mt-dm-xxxx
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        token = parts[1].strip()
-
-    # Also support:
-    # Authorization: mt-dm-xxxx
-    elif len(parts) == 1:
-        token = parts[0].strip()
-
-    else:
-        raise UnauthorizedError(
-            message="Forbidden",
-            status_code=403,
-        )
-
-    if not token:
-        raise UnauthorizedError(
-            message="Forbidden",
-            status_code=403,
-        )
-
-    # -------------------------------------------------------------------------
-    # This endpoint must be PAT-only.
-    #
-    # Your Lambda authorizer identifies application PATs by mt-dm- prefix.
-    # This also prevents an Okta JWT from being used for this restricted API.
-    # -------------------------------------------------------------------------
-    if not token.startswith("mt-dm-"):
-        raise UnauthorizedError(
-            message="Forbidden",
-            status_code=403,
-        )
-
-    # -------------------------------------------------------------------------
-    # Hash the incoming PAT exactly the same way as the Lambda Authorizer.
-    # -------------------------------------------------------------------------
-    actual_hash = hashlib.sha256(
-        token.encode()
-    ).hexdigest()
-
-    # -------------------------------------------------------------------------
-    # Load the ONLY permitted PAT hash from Lambda environment configuration.
-    # -------------------------------------------------------------------------
-    expected_hash = os.environ.get(
-        "IRC_CENSUS_PAT_HASH",
-        "",
-    ).strip()
-
-    # Fail closed if configuration is missing.
-    if not expected_hash:
-        raise UnauthorizedError(
-            message="Forbidden",
-            status_code=403,
-        )
-
-    # -------------------------------------------------------------------------
-    # Constant-time comparison.
-    # -------------------------------------------------------------------------
-    if not hmac.compare_digest(
-        actual_hash,
-        expected_hash,
-    ):
+    if user_id != IRC_CENSUS_ALLOWED_USER:
         raise UnauthorizedError(
             message="Forbidden",
             status_code=403,
@@ -150,8 +83,10 @@ def _authorize_irc_census_pat(event):
 @api_handler
 def get_irc_census_report_v1(event, context):
 
-    # Only the dedicated IRC Census PAT is allowed.
-    _authorize_irc_census_pat(event)
+    # -------------------------------------------------------------------------
+    # Only HR - Special Use PAT is permitted.
+    # -------------------------------------------------------------------------
+    _authorize_irc_census(event)
 
     row_id = LambdaUtils.get_path_param(
         event,
@@ -226,8 +161,10 @@ def get_irc_census_report_v1(event, context):
 @api_handler
 def search_irc_census_reports_v1(event, context):
 
-    # Only the dedicated IRC Census PAT is allowed.
-    _authorize_irc_census_pat(event)
+    # -------------------------------------------------------------------------
+    # Only HR - Special Use PAT is permitted.
+    # -------------------------------------------------------------------------
+    _authorize_irc_census(event)
 
     try:
         body = LambdaUtils.get_json_body(event)
@@ -296,8 +233,10 @@ def search_irc_census_reports_v1(event, context):
 @api_handler
 def list_irc_census_reports_v1(event, context):
 
-    # Only the dedicated IRC Census PAT is allowed.
-    _authorize_irc_census_pat(event)
+    # -------------------------------------------------------------------------
+    # Only HR - Special Use PAT is permitted.
+    # -------------------------------------------------------------------------
+    _authorize_irc_census(event)
 
     query_params = LambdaUtils.get_all_query_params(event)
 
