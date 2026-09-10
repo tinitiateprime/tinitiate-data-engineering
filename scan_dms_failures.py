@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import time
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping
@@ -11,26 +12,30 @@ from typing import Any, Mapping
 import boto3
 import psycopg2  # type: ignore
 
+
+# ============================================================
+# DOTENV
+# ============================================================
+
 try:
     from dotenv import load_dotenv  # type: ignore
+
 except ImportError:
 
     def load_dotenv(*_args, **_kwargs):
         return False
 
 
+# ============================================================
+# LOCAL IMPORTS
+# ============================================================
+
 import Authenticate
 import AwardJson
 import AwardList
 import CLMIngestor
+
 from models import AwardInfo
-
-
-# ============================================================
-# LOGGER
-# ============================================================
-
-logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -47,10 +52,19 @@ s3.download_file(
     "/tmp/zscaler-cert.pem",
 )
 
-# Set certificate path
+
+# Set the certificate path
+
 os.environ["REQUESTS_CA_BUNDLE"] = "/tmp/zscaler-cert.pem"
 os.environ["SSL_CERT_FILE"] = "/tmp/zscaler-cert.pem"
 os.environ["CURL_CA_BUNDLE"] = "/tmp/zscaler-cert.pem"
+
+
+# ============================================================
+# LOGGER
+# ============================================================
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -107,12 +121,6 @@ class JobConfig:
     aws_region: str | None
 
 
-@dataclass
-class ProcessResult:
-    processed: list[AwardInfo]
-    failed: list[AwardInfo]
-
-
 # ============================================================
 # MAIN
 # ============================================================
@@ -126,31 +134,51 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    # --------------------------------------------------------
-    # Build configuration
-    # --------------------------------------------------------
+    logger.info(
+        "raw args = %r",
+        argv or sys.argv,
+    )
 
-    config = build_config(argv or sys.argv)
+    logger.info(
+        "raw args count = %d",
+        len(argv or sys.argv),
+    )
 
-    # --------------------------------------------------------
-    # IMPORTANT:
+    # ========================================================
+    # BUILD CONFIG
+    # ========================================================
+
+    config = build_config(
+        argv or sys.argv
+    )
+
+    # ========================================================
+    # DATE WINDOW
     #
-    # START_DATE / END_DATE ARE OPTIONAL.
+    # START_DATE and END_DATE are NOT being passed.
     #
-    # If Glue does NOT pass dates, determine them automatically
-    # from CLM.contract_header.
-    # --------------------------------------------------------
+    # build_config() deliberately leaves both values None.
+    #
+    # Existing functionality determines dates from the DB.
+    # ========================================================
 
-    if config.start_date is None or config.end_date is None:
+    if (
+        config.start_date is None
+        or config.end_date is None
+    ):
 
         logger.info(
-            "START_DATE and END_DATE were not supplied. "
-            "Determining date window automatically."
+            "START_DATE and END_DATE are not being passed. "
+            "Getting start and end dates from database."
         )
 
         config.start_date, config.end_date = determine_date_window(
             config.db_conn_params
         )
+
+    # ========================================================
+    # START LOG
+    # ========================================================
 
     logger.info(
         "Starting CLM REST ingest for %s through %s",
@@ -165,9 +193,9 @@ def main(argv: list[str] | None = None) -> int:
         config.skip_existing,
     )
 
-    # --------------------------------------------------------
-    # Authenticate
-    # --------------------------------------------------------
+    # ========================================================
+    # AUTHENTICATION
+    # ========================================================
 
     auth = Authenticate.Authenticate(
         config.clm_rest_url,
@@ -177,13 +205,14 @@ def main(argv: list[str] | None = None) -> int:
     auth_token = auth.bearer()
 
     if not auth_token:
+
         raise RuntimeError(
             "Unable to get authorization token from Unison CLM"
         )
 
-    # --------------------------------------------------------
-    # Get awards
-    # --------------------------------------------------------
+    # ========================================================
+    # GET AWARD LIST
+    # ========================================================
 
     awards = get_award_list(
         config,
@@ -195,9 +224,9 @@ def main(argv: list[str] | None = None) -> int:
         len(awards),
     )
 
-    # --------------------------------------------------------
-    # Skip existing awards
-    # --------------------------------------------------------
+    # ========================================================
+    # SKIP EXISTING
+    # ========================================================
 
     if config.skip_existing:
 
@@ -211,9 +240,9 @@ def main(argv: list[str] | None = None) -> int:
             len(awards),
         )
 
-    # --------------------------------------------------------
-    # Process awards
-    # --------------------------------------------------------
+    # ========================================================
+    # PROCESS AWARDS
+    # ========================================================
 
     result = process_awards(
         config,
@@ -222,9 +251,9 @@ def main(argv: list[str] | None = None) -> int:
         awards,
     )
 
-    # --------------------------------------------------------
-    # Verify records made it into DB
-    # --------------------------------------------------------
+    # ========================================================
+    # VERIFY
+    # ========================================================
 
     missing_after_verify: list[AwardInfo] = []
 
@@ -239,11 +268,14 @@ def main(argv: list[str] | None = None) -> int:
             result.processed,
         )
 
-    # --------------------------------------------------------
-    # Error report
-    # --------------------------------------------------------
+    # ========================================================
+    # ERRORS
+    # ========================================================
 
-    error_items = result.failed + missing_after_verify
+    error_items = (
+        result.failed
+        + missing_after_verify
+    )
 
     if error_items:
 
@@ -258,9 +290,9 @@ def main(argv: list[str] | None = None) -> int:
             report_location,
         )
 
-    # --------------------------------------------------------
-    # Final statistics
-    # --------------------------------------------------------
+    # ========================================================
+    # COMPLETE
+    # ========================================================
 
     logger.info(
         "CLM REST ingest complete: "
@@ -275,102 +307,124 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ============================================================
+# PROCESS RESULT
+# ============================================================
+
+@dataclass
+class ProcessResult:
+    processed: list[AwardInfo]
+    failed: list[AwardInfo]
+
+
+# ============================================================
 # BUILD CONFIG
 # ============================================================
 
-def build_config(argv: list[str]) -> JobConfig:
+def build_config(
+    argv: list[str],
+) -> JobConfig:
 
-    # --------------------------------------------------------
+    # ========================================================
     # IMPORTANT CHANGE
     #
-    # Previously:
+    # We still parse all normal Glue arguments.
     #
-    # raw_args, positional = parse_job_args(argv)
+    # We DO NOT use positional arguments for dates.
     #
-    # and then positional arguments were validated.
+    # We DO NOT read START_DATE.
+    # We DO NOT read END_DATE.
     #
-    # We do NOT want positional START/END dates anymore.
-    # Therefore positional arguments are ignored.
-    # --------------------------------------------------------
+    # This prevents:
+    #
+    # ValueError:
+    # Usage: ProcessCLM.py
+    # [MM-DD-YYYY MM-DD-YYYY]
+    # or Glue args --START_DATE --END_DATE
+    #
+    # Everything else stays the same.
+    # ========================================================
 
-    raw_args, _ = parse_job_args(argv)
+    raw_args, _ = parse_job_args(
+        argv
+    )
+
+    # ========================================================
+    # AWS REGION
+    # ========================================================
 
     aws_region = first_value(
-        [raw_args, os.environ],
+        [
+            raw_args,
+            os.environ,
+        ],
         "AWS_REGION",
         "REGION",
     )
 
-    # --------------------------------------------------------
-    # Secrets
-    # --------------------------------------------------------
+    # ========================================================
+    # SECRETS
+    # ========================================================
 
     secret_values = load_secret_values(
         raw_args,
         aws_region,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # START / END DATE
     #
-    # OPTIONAL
+    # BLOCKED INTENTIONALLY.
     #
-    # If not supplied, main() will calculate them.
-    # --------------------------------------------------------
+    # We are NOT reading:
+    #
+    # --START_DATE
+    # --END_DATE
+    #
+    # We are NOT reading positional dates.
+    #
+    # main() will call determine_date_window().
+    # ========================================================
 
-    start_date = first_value(
-        [raw_args, os.environ],
-        "START_DATE",
-    )
+    start_date = None
+    end_date = None
 
-    end_date = first_value(
-        [raw_args, os.environ],
-        "END_DATE",
-    )
-
-    # If one is supplied, both must be supplied.
-    if bool(start_date) != bool(end_date):
-
-        raise ValueError(
-            "START_DATE and END_DATE must be supplied together"
-        )
-
-    # Validate only when dates were explicitly supplied.
-    if start_date and end_date:
-
-        validate_date(start_date)
-        validate_date(end_date)
-
-    # --------------------------------------------------------
-    # Dry run
-    # --------------------------------------------------------
+    # ========================================================
+    # DRY RUN
+    # ========================================================
 
     dry_run = parse_bool(
         first_value(
-            [raw_args, os.environ],
+            [
+                raw_args,
+                os.environ,
+            ],
             "DRY_RUN",
         ),
         default=False,
     )
 
-    # --------------------------------------------------------
-    # Skip existing
-    # --------------------------------------------------------
+    # ========================================================
+    # SKIP EXISTING
+    # ========================================================
 
     skip_existing = parse_bool(
         first_value(
-            [raw_args, os.environ],
+            [
+                raw_args,
+                os.environ,
+            ],
             "SKIP_EXISTING",
         ),
         default=False,
     )
 
-    # --------------------------------------------------------
-    # Database required?
+    # ========================================================
+    # DATABASE
     #
-    # Since dates aren't normally supplied, we need the DB
-    # because determine_date_window() queries contract_header.
-    # --------------------------------------------------------
+    # Since START_DATE and END_DATE are None,
+    # the database is required so determine_date_window()
+    # can calculate the dates.
+    # ========================================================
 
     needs_db = (
         not dry_run
@@ -390,9 +444,9 @@ def build_config(argv: list[str]) -> JobConfig:
         else {}
     )
 
-    # --------------------------------------------------------
-    # CLM URL
-    # --------------------------------------------------------
+    # ========================================================
+    # CLM REST URL
+    # ========================================================
 
     clm_rest_url = required_value(
         [
@@ -406,9 +460,9 @@ def build_config(argv: list[str]) -> JobConfig:
         "rest_url",
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # CLM API KEY
-    # --------------------------------------------------------
+    # ========================================================
 
     clm_api_key = required_value(
         [
@@ -422,40 +476,59 @@ def build_config(argv: list[str]) -> JobConfig:
         "api_key",
     )
 
-    # --------------------------------------------------------
-    # Return configuration
-    # --------------------------------------------------------
+    # ========================================================
+    # RETURN CONFIG
+    # ========================================================
 
     return JobConfig(
         start_date=start_date,
         end_date=end_date,
-        explicit_dates=bool(start_date and end_date),
-        clm_rest_url=clm_rest_url.rstrip("/") + "/",
+
+        # Dates are never passed explicitly now.
+        explicit_dates=False,
+
+        clm_rest_url=(
+            clm_rest_url.rstrip("/")
+            + "/"
+        ),
+
         clm_api_key=clm_api_key,
+
         db_conn_params=db_conn_params,
+
         dry_run=dry_run,
+
         verify_ingest=parse_bool(
             first_value(
-                [raw_args, os.environ],
+                [
+                    raw_args,
+                    os.environ,
+                ],
                 "VERIFY_INGEST",
             ),
             default=True,
         ),
+
         skip_existing=skip_existing,
+
         error_report_uri=(
             first_value(
-                [raw_args, os.environ],
+                [
+                    raw_args,
+                    os.environ,
+                ],
                 "ERROR_REPORT_URI",
                 "ERROR_REPORT_S3_URI",
             )
             or DEFAULT_ERROR_REPORT_PATH
         ),
+
         aws_region=aws_region,
     )
 
 
 # ============================================================
-# DATABASE CONNECTION PARAMETERS
+# BUILD DB CONNECTION PARAMETERS
 # ============================================================
 
 def build_db_conn_params(
@@ -463,12 +536,14 @@ def build_db_conn_params(
 ) -> dict[str, Any]:
 
     return {
+
         "host": required_value(
             sources,
             "DB_HOST",
             "PG_HOST",
             "host",
         ),
+
         "port": int(
             required_value(
                 sources,
@@ -477,6 +552,7 @@ def build_db_conn_params(
                 "port",
             )
         ),
+
         "dbname": required_value(
             sources,
             "DB_NAME",
@@ -484,6 +560,7 @@ def build_db_conn_params(
             "dbname",
             "database",
         ),
+
         "user": required_value(
             sources,
             "DB_USER",
@@ -491,6 +568,7 @@ def build_db_conn_params(
             "username",
             "user",
         ),
+
         "password": required_value(
             sources,
             "DB_PASS",
@@ -502,14 +580,18 @@ def build_db_conn_params(
 
 
 # ============================================================
-# ARGUMENT PARSER
+# PARSE JOB ARGUMENTS
 # ============================================================
 
 def parse_job_args(
     argv: list[str],
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[
+    dict[str, str],
+    list[str],
+]:
 
     args: dict[str, str] = {}
+
     positional: list[str] = []
 
     i = 1
@@ -524,42 +606,61 @@ def parse_job_args(
 
             if "=" in key_value:
 
-                key, value = key_value.split("=", 1)
+                key, value = key_value.split(
+                    "=",
+                    1,
+                )
 
             elif (
                 i + 1 < len(argv)
                 and not argv[i + 1].startswith("--")
             ):
 
-                key, value = key_value, argv[i + 1]
+                key = key_value
+                value = argv[i + 1]
+
                 i += 1
 
             else:
 
-                key, value = key_value, "true"
+                key = key_value
+                value = "true"
 
-            args[normalize_key(key)] = value
+            args[
+                normalize_key(key)
+            ] = value
 
         else:
 
-            positional.append(token)
+            positional.append(
+                token
+            )
 
         i += 1
 
-    return args, positional
+    return (
+        args,
+        positional,
+    )
 
 
 # ============================================================
-# NORMALIZE CONFIG KEY
+# NORMALIZE KEY
 # ============================================================
 
-def normalize_key(key: str) -> str:
+def normalize_key(
+    key: str,
+) -> str:
 
-    return key.replace("-", "_").upper()
+    return (
+        key
+        .replace("-", "_")
+        .upper()
+    )
 
 
 # ============================================================
-# GET FIRST CONFIG VALUE
+# FIRST VALUE
 # ============================================================
 
 def first_value(
@@ -569,7 +670,9 @@ def first_value(
 
     for key in keys:
 
-        normalized = normalize_key(key)
+        normalized = normalize_key(
+            key
+        )
 
         for source in sources:
 
@@ -578,20 +681,24 @@ def first_value(
                 normalized,
             ):
 
-                value = source.get(candidate)
+                value = source.get(
+                    candidate
+                )
 
                 if (
                     value is not None
                     and str(value).strip() != ""
                 ):
 
-                    return str(value)
+                    return str(
+                        value
+                    )
 
     return None
 
 
 # ============================================================
-# REQUIRED CONFIG VALUE
+# REQUIRED VALUE
 # ============================================================
 
 def required_value(
@@ -615,7 +722,7 @@ def required_value(
 
 
 # ============================================================
-# PARSE BOOLEAN
+# PARSE BOOL
 # ============================================================
 
 def parse_bool(
@@ -626,20 +733,30 @@ def parse_bool(
     if value is None:
         return default
 
-    return value.strip().lower() in {
-        "1",
-        "true",
-        "t",
-        "yes",
-        "y",
-    }
+    return (
+        value
+        .strip()
+        .lower()
+        in {
+            "1",
+            "true",
+            "t",
+            "yes",
+            "y",
+        }
+    )
 
 
 # ============================================================
 # VALIDATE DATE
+#
+# Keeping this function because it already exists in your file.
+# It is simply no longer called for START_DATE / END_DATE.
 # ============================================================
 
-def validate_date(value: str) -> None:
+def validate_date(
+    value: str,
+) -> None:
 
     datetime.strptime(
         value,
@@ -657,14 +774,17 @@ def load_secret_values(
 ) -> dict[str, str]:
 
     secret_ids = [
+
         first_value(
             [raw_args],
             "SECRET_ID",
         ),
+
         first_value(
             [raw_args],
             "DB_SECRET_ID",
         ),
+
         first_value(
             [raw_args],
             "CLM_SECRET_ID",
@@ -690,7 +810,7 @@ def load_secret_values(
 
 
 # ============================================================
-# LOAD SECRET FROM AWS SECRETS MANAGER
+# LOAD JSON SECRET
 # ============================================================
 
 def load_json_secret(
@@ -698,8 +818,12 @@ def load_json_secret(
     aws_region: str | None,
 ) -> dict[str, str]:
 
+    import boto3  # type: ignore
+
     client_kwargs = (
-        {"region_name": aws_region}
+        {
+            "region_name": aws_region
+        }
         if aws_region
         else {}
     )
@@ -730,16 +854,23 @@ def load_json_secret(
             "utf-8"
         )
 
-    secret = json.loads(secret_string)
+    secret = json.loads(
+        secret_string
+    )
 
     return {
-        normalize_key(str(k)): str(v)
+        normalize_key(
+            str(k)
+        ): str(v)
+
         for k, v in secret.items()
     }
 
 
 # ============================================================
 # DETERMINE DATE WINDOW
+#
+# THIS FUNCTION IS UNCHANGED.
 # ============================================================
 
 def determine_date_window(
@@ -748,7 +879,8 @@ def determine_date_window(
 
     query = """
         select TO_CHAR(min("stDate"), 'MM-DD-YYYY')
-        from (
+        from
+        (
             select
                 (max(cast(create_date as date)) - 1) AS "stDate"
             from "CLM".contract_header
@@ -769,35 +901,42 @@ def determine_date_window(
 
         with conn.cursor() as cursor:
 
-            cursor.execute(query)
+            cursor.execute(
+                query
+            )
 
             row = cursor.fetchone()
 
-    if row is None or row[0] is None:
+    if (
+        row is None
+        or row[0] is None
+    ):
 
         raise RuntimeError(
             "Unable to infer start date because "
             "CLM.contract_header has no create/status dates"
         )
 
-    start_date = str(row[0])
+    start_date = str(
+        row[0]
+    )
 
     e_date = datetime.strptime(
         start_date,
         DATE_FORMAT,
     )
 
-    end_date = "12-31-" + str(
-        e_date.year + 1
+    end_date = (
+        "12-31-"
+        + str(
+            e_date.year + 1
+        )
     )
 
-    logger.info(
-        "Automatically determined date window: %s through %s",
+    return (
         start_date,
         end_date,
     )
-
-    return start_date, end_date
 
 
 # ============================================================
@@ -839,7 +978,9 @@ def get_award_list(
                 clm_date_type,
             )
 
-            response_text = aw_list.reqlist()
+            response_text = (
+                aw_list.reqlist()
+            )
 
             if not response_text:
 
@@ -877,7 +1018,9 @@ def get_award_list(
 
                 if key not in seen:
 
-                    seen.add(key)
+                    seen.add(
+                        key
+                    )
 
                     awards.append(
                         award
@@ -895,7 +1038,7 @@ def get_award_list(
 
 
 # ============================================================
-# DATE FIELD FOR STATUS
+# DATE TYPE FOR STATUS
 # ============================================================
 
 def date_type_for_status(
@@ -915,7 +1058,7 @@ def date_type_for_status(
 
 
 # ============================================================
-# AWARD INFO
+# AWARD INFO FROM DICT
 # ============================================================
 
 def award_info_from_dict(
@@ -923,36 +1066,42 @@ def award_info_from_dict(
 ) -> AwardInfo:
 
     return AwardInfo(
+
         AwardNumber=str(
             item.get(
                 "AwardNumber"
             )
             or ""
         ),
+
         ModificationNumber=str(
             item.get(
                 "ModificationNumber"
             )
             or ""
         ),
+
         OrderNumber=str(
             item.get(
                 "OrderNumber"
             )
             or ""
         ),
+
         ContractType=str(
             item.get(
                 "ContractType"
             )
             or ""
         ),
+
         Status=str(
             item.get(
                 "Status"
             )
             or ""
         ),
+
         Date=str(
             item.get(
                 "Date"
@@ -972,11 +1121,14 @@ def filter_existing_awards(
 ) -> list[AwardInfo]:
 
     keys = [
-        award_key(award)
+        award_key(
+            award
+        )
         for award in awards
     ]
 
     if not keys:
+
         return awards
 
     existing = fetch_existing_keys(
@@ -1030,9 +1182,9 @@ def process_awards(
             start=1,
         ):
 
-            # ------------------------------------------------
-            # Get complete award JSON
-            # ------------------------------------------------
+            # =================================================
+            # GET FULL AWARD JSON
+            # =================================================
 
             full_response = fetch_award_json(
                 config,
@@ -1040,16 +1192,18 @@ def process_awards(
                 award,
             )
 
-            # ------------------------------------------------
-            # Retry once with new bearer token
-            # ------------------------------------------------
+            # =================================================
+            # REFRESH TOKEN AND RETRY
+            # =================================================
 
             if not full_response:
 
                 logger.warning(
                     "Empty response for %s; "
                     "refreshing token and retrying",
-                    award_log_label(award),
+                    award_log_label(
+                        award
+                    ),
                 )
 
                 auth_token = auth.bearer()
@@ -1060,11 +1214,17 @@ def process_awards(
                     award,
                 )
 
+            # =================================================
+            # STILL EMPTY
+            # =================================================
+
             if not full_response:
 
                 logger.error(
                     "Unable to get award JSON for %s",
-                    award_log_label(award),
+                    award_log_label(
+                        award
+                    ),
                 )
 
                 failed.append(
@@ -1073,9 +1233,9 @@ def process_awards(
 
                 continue
 
-            # ------------------------------------------------
-            # Parse JSON
-            # ------------------------------------------------
+            # =================================================
+            # JSON
+            # =================================================
 
             try:
 
@@ -1087,7 +1247,9 @@ def process_awards(
 
                 logger.error(
                     "JSON parse failed for %s: %s",
-                    award_log_label(award),
+                    award_log_label(
+                        award
+                    ),
                     exc,
                 )
 
@@ -1097,18 +1259,18 @@ def process_awards(
 
                 continue
 
-            # ------------------------------------------------
-            # Status date
-            # ------------------------------------------------
+            # =================================================
+            # STATUS DATE
+            # =================================================
 
             award_json.setdefault(
                 "Header",
                 {},
             )["StatusDate"] = award.Date
 
-            # ------------------------------------------------
-            # Insert data
-            # ------------------------------------------------
+            # =================================================
+            # INGEST
+            # =================================================
 
             try:
 
@@ -1139,7 +1301,9 @@ def process_awards(
 
                 logger.exception(
                     "Unable to insert %s: %s",
-                    award_log_label(award),
+                    award_log_label(
+                        award
+                    ),
                     exc,
                 )
 
@@ -1147,9 +1311,9 @@ def process_awards(
                     award
                 )
 
-            # ------------------------------------------------
-            # Progress logging
-            # ------------------------------------------------
+            # =================================================
+            # PROGRESS
+            # =================================================
 
             if index % 25 == 0:
 
@@ -1162,6 +1326,7 @@ def process_awards(
     finally:
 
         if conn is not None:
+
             conn.close()
 
     logger.info(
@@ -1179,7 +1344,7 @@ def process_awards(
 
 
 # ============================================================
-# FETCH FULL AWARD JSON
+# FETCH AWARD JSON
 # ============================================================
 
 def fetch_award_json(
@@ -1209,7 +1374,9 @@ def verify_processed_awards(
 ) -> list[AwardInfo]:
 
     keys = [
-        award_key(award)
+        award_key(
+            award
+        )
         for award in processed
     ]
 
@@ -1229,7 +1396,9 @@ def verify_processed_awards(
 
         logger.warning(
             "Not found in DB after ingest: %s",
-            award_key(award),
+            award_key(
+                award
+            ),
         )
 
     return missing
@@ -1245,6 +1414,7 @@ def fetch_existing_keys(
 ) -> set[str]:
 
     if not keys:
+
         return set()
 
     query = """
@@ -1272,12 +1442,15 @@ def fetch_existing_keys(
 
             cursor.execute(
                 query,
-                (keys,),
+                (
+                    keys,
+                ),
             )
 
             return {
                 row[0]
-                for row in cursor.fetchall()
+                for row
+                in cursor.fetchall()
             }
 
 
@@ -1291,21 +1464,27 @@ def write_error_report(
 ) -> str:
 
     report_body = "".join(
+
         "documentNumber="
         + award.AwardNumber
+
         + " orderNumber="
         + award.OrderNumber
+
         + " versionNumber="
         + award.ModificationNumber
+
         + " StatusDate="
         + award.Date
+
         + "\n"
+
         for award in awards
     )
 
-    # --------------------------------------------------------
-    # Write to S3
-    # --------------------------------------------------------
+    # ========================================================
+    # S3
+    # ========================================================
 
     if config.error_report_uri.startswith(
         "s3://"
@@ -1317,11 +1496,13 @@ def write_error_report(
             config.aws_region,
         )
 
-        return config.error_report_uri
+        return (
+            config.error_report_uri
+        )
 
-    # --------------------------------------------------------
-    # Write locally
-    # --------------------------------------------------------
+    # ========================================================
+    # LOCAL
+    # ========================================================
 
     output_dir = os.path.dirname(
         config.error_report_uri
@@ -1344,11 +1525,13 @@ def write_error_report(
             report_body
         )
 
-    return config.error_report_uri
+    return (
+        config.error_report_uri
+    )
 
 
 # ============================================================
-# WRITE TEXT TO S3
+# WRITE S3 TEXT
 # ============================================================
 
 def write_s3_text(
@@ -1357,12 +1540,16 @@ def write_s3_text(
     aws_region: str | None,
 ) -> None:
 
+    import boto3  # type: ignore
+
     bucket, key = parse_s3_uri(
         uri
     )
 
     client_kwargs = (
-        {"region_name": aws_region}
+        {
+            "region_name": aws_region
+        }
         if aws_region
         else {}
     )
@@ -1397,17 +1584,23 @@ def parse_s3_uri(
         "/"
     )
 
-    if not bucket or not key:
+    if (
+        not bucket
+        or not key
+    ):
 
         raise ValueError(
             f"Invalid S3 URI: {uri}"
         )
 
-    return bucket, key
+    return (
+        bucket,
+        key,
+    )
 
 
 # ============================================================
-# AWARD UNIQUE KEY
+# AWARD KEY
 # ============================================================
 
 def award_key(
@@ -1443,15 +1636,23 @@ def award_log_label(
 
 # ============================================================
 # ENTRY POINT
+#
+# IMPORTANT:
+#
+# DO NOT USE:
+#
+# raise SystemExit(main())
+#
+# AWS Glue was interpreting SystemExit: 0 as an exception.
+#
+# Just call main().
 # ============================================================
 
 if __name__ == "__main__":
 
     try:
 
-        raise SystemExit(
-            main()
-        )
+        main()
 
     except Exception as exc:
 
