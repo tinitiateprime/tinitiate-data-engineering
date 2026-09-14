@@ -1,21 +1,14 @@
 {
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "glue:ListWorkflows",
-        "glue:GetWorkflow",
-        "glue:GetWorkflowRun",
-        "glue:GetWorkflowRuns",
-        "glue:GetJob",
-        "glue:GetJobs",
-        "glue:GetJobRun",
-        "glue:GetJobRuns",
-        "glue:GetTriggers",
-        "glue:GetTrigger"
-      ],
-      "Resource": "*"
+  "Sid": "AllowEventBridgeToPublish",
+  "Effect": "Allow",
+  "Principal": {
+    "Service": "events.amazonaws.com"
+  },
+  "Action": "sns:Publish",
+  "Resource": "YOUR_SNS_TOPIC_ARN",
+  "Condition": {
+    "ArnEquals": {
+      "aws:SourceArn": "YOUR_EVENTBRIDGE_RULE_ARN"
     }
-  ]
+  }
 }
