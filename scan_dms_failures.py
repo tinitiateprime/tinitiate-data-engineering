@@ -14,5 +14,5 @@ JOIN pg_namespace n2
     ON c2.relnamespace = n2.oid
 WHERE n1.nspname = 'gold'
   AND c1.relname = 'financials_updated_vw'
-  AND c2.relkind IN ('r','v','m','f')
+  AND c2.relkind IN ('r', 'v', 'm', 'f')
 ORDER BY source_schema, source_object;
