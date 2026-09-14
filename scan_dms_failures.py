@@ -1,9 +1,4 @@
-{
-  "Effect": "Allow",
-  "Action": [
-    "s3:GetObject"
-  ],
-  "Resource": [
-    "arn:aws-us-gov:s3:::YOUR-GLUE-SCRIPT-BUCKET/*"
-  ]
-}
+curl.exe -X GET "https://mt-dm-data.hii-next-dev.com/test/v1/contracts/111120" `
+  -H "Authorization: Bearer <TOKEN>" `
+  -H "Content-Type: application/json" `
+  -d '{"filters":{"proj_id":{"eq":"111120.430"}},"page":{"limit":50}}'
