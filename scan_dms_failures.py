@@ -1,9 +1,1 @@
---OPENMETADATA_ENABLED              true
---OPENMETADATA_HOST                 http://YOUR-OPENMETADATA-HOST:8585
---OPENMETADATA_TOKEN                <JWT_TOKEN>
---OPENMETADATA_BRONZE_SERVICE       NEXT Postgres Bronze
---OPENMETADATA_SILVER_SERVICE       NEXT Postgres Silver
---OPENMETADATA_TIMEOUT_SECONDS      30
-
---INCLUDE_TABLES
-PROJ
+Yes, we can do it using OpenLineage. The framework already knows the exact Bronze source and Silver target at runtime, so emitting OpenLineage events should be a relatively small code change. The larger piece is configuring the event transport, likely Kafka/Kinesis, and the OpenMetadata OpenLineage ingestion. I’d estimate it as a moderate effort, not a rewrite of the framework.
