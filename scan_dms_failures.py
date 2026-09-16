@@ -1,423 +1,545 @@
 """
-Unit tests for domain.services.irc_census_report_service
+Unit tests for v1.handlers.irc_census_report
 """
 
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from core.filters import FiltersEnvelope, SortModel
-from core.pagination import PaginationModel
+import pytest
 
-from domain.services import irc_census_report_service
+from v1.handlers.irc_census_report import (
+    get_irc_census_report_v1,
+    list_irc_census_reports_v1,
+    search_irc_census_reports_v1,
+)
 
 
-# =============================================================================
-# TEST DATA
-# =============================================================================
-
+ALLOWED_USER = "HR - Special Use"
 LAST_FIRST_NAME = "Price, Kevin T"
 
-SAMPLE_ITEM = {
-    "row_id": 16698,
-    "my_id": "X83855",
-    "last_first_name": LAST_FIRST_NAME,
-    "prir_name": "",
-    "s_empl_status_cd": "ACT",
-    "hire_dt": "2014-03-01",
-    "reh_dt": "2022-10-01",
-    "term_dt": None,
-    "seniority_dt": "2014-03-01",
-    "term_reason_cd": "",
-    "taxble_entity_id": "525",
-    "locator_cd": "HYBRID",
-    "empl_class_cd": "E1",
-    "pto_accrl_cd": None,
-    "bu_name": None,
-    "dept_num": None,
-    "detl_job_cd": None,
-    "title_desc": "Dir Technology 1",
-    "mgr_name": "Sosa, Marc",
-}
+
+def mock_context():
+    return SimpleNamespace(
+        aws_request_id="test-request-id"
+    )
 
 
-def _db_result(items=None, cursor=None, has_more=False):
-    """
-    Helper that returns the structure expected from the repository.
-    """
+def authorized_request_context():
     return {
-        "items": items if items is not None else [],
-        "page": {
-            "cursor": cursor,
-            "has_more": has_more,
+        "requestId": "test-request-id",
+        "authorizer": {
+            "lambda": {
+                "userId": ALLOWED_USER
+            }
         },
     }
 
 
-# =============================================================================
-# SEARCH TESTS
-# =============================================================================
+def mock_metadata():
+    metadata = MagicMock()
 
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_reports"
-)
-def test_search_irc_census_reports_success(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM],
-        cursor=None,
-        has_more=False,
-    )
+    metadata.cursor = None
+    metadata.has_more = False
+    metadata.applied_filters = None
 
-    filters = FiltersEnvelope(filters={})
-
-    result = irc_census_report_service.search_irc_census_reports(
-        filters=filters,
-        sort=None,
-        page=PaginationModel(limit=10),
-        columns=None,
-    )
-
-    assert len(result.items) == 1
-    assert result.items[0].row_id == 16698
-    assert result.items[0].last_first_name == LAST_FIRST_NAME
-
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-
-    mock_repo.assert_called_once()
-
-
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_reports"
-)
-def test_search_irc_census_reports_dict_filters(mock_repo):
-    mock_repo.return_value = _db_result(items=[])
-
-    filters = {
-        "last_first_name": {
-            "eq": LAST_FIRST_NAME
-        }
+    metadata.model_dump.return_value = {
+        "cursor": None,
+        "hasMore": False,
+        "appliedFilters": None,
     }
 
-    result = irc_census_report_service.search_irc_census_reports(
-        filters=filters,
-        sort=None,
-        page=PaginationModel(limit=10),
-        columns=None,
-    )
-
-    assert result.items == []
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_reports"
-)
-def test_search_irc_census_reports_none_filters(mock_repo):
-    mock_repo.return_value = _db_result(items=[])
-
-    result = irc_census_report_service.search_irc_census_reports(
-        filters=None,
-        sort=None,
-        page=None,
-        columns=None,
-    )
-
-    assert result.items == []
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_reports"
-)
-def test_search_irc_census_reports_custom_sort(mock_repo):
-    mock_repo.return_value = _db_result(items=[])
-
-    sort = SortModel(
-        field="last_first_name",
-        order="asc",
-    )
-
-    result = irc_census_report_service.search_irc_census_reports(
-        filters=None,
-        sort=sort,
-        page=PaginationModel(limit=10),
-        columns=None,
-    )
-
-    assert result.items == []
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert call_kwargs["sort"] == sort
+    return metadata
 
 
 # =============================================================================
-# DETAIL TESTS
+# GET DETAIL - SUCCESS
 # =============================================================================
 
 @patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportResponseModel"
 )
-def test_get_irc_census_report_details_success(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM],
-        cursor=None,
-        has_more=False,
+@patch(
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportDetailResponseModel"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "get_irc_census_report_details"
+)
+def test_get_irc_census_report_v1_success(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+):
+    results = MagicMock()
+
+    results.items = [
+        {
+            "row_id": 16698,
+            "my_id": "X83855",
+            "last_first_name": LAST_FIRST_NAME,
+        }
+    ]
+
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    validated_item = MagicMock()
+    mock_inner_schema.model_validate.return_value = validated_item
+
+    outer = MagicMock()
+
+    outer.model_dump.return_value = {
+        "metadata": {
+            "cursor": None,
+            "hasMore": False,
+        },
+        "data": [
+            {
+                "rowId": 16698,
+                "myId": "X83855",
+                "lastFirstName": LAST_FIRST_NAME,
+            }
+        ],
+    }
+
+    mock_outer_schema.return_value = outer
+
+    event = {
+        "pathParameters": {
+            "last_first_name": LAST_FIRST_NAME,
+        },
+        "queryStringParameters": None,
+        "requestContext": authorized_request_context(),
+    }
+
+    response = get_irc_census_report_v1(
+        event,
+        mock_context(),
     )
 
-    filters = FiltersEnvelope(filters={})
+    assert response["statusCode"] == 200
 
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name=LAST_FIRST_NAME,
-        filters=filters,
-        limit=10,
-        cursor=None,
-        columns=None,
+    mock_service.assert_called_once()
+
+    kwargs = mock_service.call_args.kwargs
+
+    assert kwargs["last_first_name"] == LAST_FIRST_NAME
+    assert "row_id" not in kwargs
+
+    mock_inner_schema.model_validate.assert_called_once_with(
+        results.items[0]
     )
 
-    assert len(result.items) == 1
 
-    item = result.items[0]
+# =============================================================================
+# GET DETAIL - MISSING LAST_FIRST_NAME
+# =============================================================================
 
-    assert item.row_id == 16698
-    assert item.my_id == "X83855"
-    assert item.last_first_name == LAST_FIRST_NAME
-    assert item.title_desc == "Dir Technology 1"
-    assert item.mgr_name == "Sosa, Marc"
+def test_get_irc_census_report_v1_missing_id():
+    event = {
+        "pathParameters": {},
+        "queryStringParameters": None,
+        "requestContext": authorized_request_context(),
+    }
 
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
+    response = get_irc_census_report_v1(
+        event,
+        mock_context(),
+    )
 
-    mock_repo.assert_called_once()
+    assert response["statusCode"] == 400
 
-    call_kwargs = mock_repo.call_args.kwargs
+    body = (
+        response["body"]
+        if isinstance(response["body"], dict)
+        else json.loads(response["body"])
+    )
 
     assert (
-        call_kwargs["last_first_name"]
-        == LAST_FIRST_NAME
+        body["error"]["message"]
+        == "last_first_name is required."
     )
 
-    # row_id should NOT be the detail lookup parameter anymore.
-    assert "row_id" not in call_kwargs
 
+# =============================================================================
+# GET DETAIL - NOT FOUND
+# =============================================================================
 
 @patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
+    "v1.handlers.irc_census_report."
+    "get_irc_census_report_details"
 )
-def test_get_irc_census_report_details_not_found(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[],
-        cursor=None,
-        has_more=False,
+def test_get_irc_census_report_v1_not_found(
+    mock_service,
+):
+    results = MagicMock()
+    results.items = []
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    event = {
+        "pathParameters": {
+            "last_first_name": "Does Not Exist",
+        },
+        "queryStringParameters": None,
+        "requestContext": authorized_request_context(),
+    }
+
+    response = get_irc_census_report_v1(
+        event,
+        mock_context(),
     )
 
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name="Does Not Exist",
-        filters=None,
-        limit=10,
-        cursor=None,
-        columns=None,
-    )
+    assert response["statusCode"] == 404
 
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
+    mock_service.assert_called_once()
 
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
+    kwargs = mock_service.call_args.kwargs
 
     assert (
-        call_kwargs["last_first_name"]
+        kwargs["last_first_name"]
         == "Does Not Exist"
     )
 
 
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
-)
-def test_get_irc_census_report_details_missing_key(mock_repo):
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name="",
-        filters=None,
-        limit=10,
-        cursor=None,
-        columns=None,
-    )
-
-    assert result.items == []
-    assert result.metadata.cursor is None
-    assert result.metadata.has_more is False
-    assert result.metadata.applied_filters is None
-
-    # Repository must not be called if the name is missing.
-    mock_repo.assert_not_called()
-
+# =============================================================================
+# LIST - SUCCESS
+# =============================================================================
 
 @patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportResponseModel"
 )
-def test_get_irc_census_report_details_dict_filters(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM],
-        cursor=None,
-        has_more=False,
-    )
+@patch(
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportListResponseModel"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "search_irc_census_reports"
+)
+def test_list_irc_census_reports_v1_success(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+):
+    results = MagicMock()
 
-    filters = {
-        "s_empl_status_cd": {
-            "eq": "ACT"
+    results.items = [
+        {
+            "row_id": 16698,
+            "last_first_name": LAST_FIRST_NAME,
         }
+    ]
+
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    mock_inner_schema.model_validate.return_value = MagicMock()
+
+    outer = MagicMock()
+
+    outer.model_dump.return_value = {
+        "metadata": {
+            "cursor": None,
+            "hasMore": False,
+        },
+        "data": [
+            {
+                "rowId": 16698,
+                "lastFirstName": LAST_FIRST_NAME,
+            }
+        ],
     }
 
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name=LAST_FIRST_NAME,
-        filters=filters,
-        limit=10,
-        cursor=None,
-        columns=None,
+    mock_outer_schema.return_value = outer
+
+    event = {
+        "queryStringParameters": {
+            "limit": "10",
+        },
+        "requestContext": authorized_request_context(),
+    }
+
+    response = list_irc_census_reports_v1(
+        event,
+        mock_context(),
     )
 
-    assert len(result.items) == 1
-    assert result.items[0].last_first_name == LAST_FIRST_NAME
+    assert response["statusCode"] == 200
 
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-    assert (
-        call_kwargs["last_first_name"]
-        == LAST_FIRST_NAME
-    )
-
-
-@patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
-)
-def test_get_irc_census_report_details_none_filters(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM],
-        cursor=None,
-        has_more=False,
-    )
-
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name=LAST_FIRST_NAME,
-        filters=None,
-        limit=10,
-        cursor=None,
-        columns=None,
-    )
-
-    assert len(result.items) == 1
-    assert result.items[0].row_id == 16698
-    assert result.items[0].last_first_name == LAST_FIRST_NAME
-
-    mock_repo.assert_called_once()
-
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert isinstance(
-        call_kwargs["filters"],
-        FiltersEnvelope,
-    )
-
-    assert (
-        call_kwargs["last_first_name"]
-        == LAST_FIRST_NAME
-    )
+    mock_service.assert_called_once()
 
 
 # =============================================================================
-# DETAIL PAGINATION / SORT
+# LIST - DEFAULT QUERY PARAMETERS
 # =============================================================================
 
 @patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportResponseModel"
 )
-def test_get_irc_census_report_details_pagination(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM],
-        cursor="next-cursor",
-        has_more=True,
+@patch(
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportListResponseModel"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "search_irc_census_reports"
+)
+def test_list_irc_census_reports_v1_default_query_params(
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+):
+    results = MagicMock()
+    results.items = []
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    outer = MagicMock()
+
+    outer.model_dump.return_value = {
+        "metadata": {
+            "cursor": None,
+            "hasMore": False,
+        },
+        "data": [],
+    }
+
+    mock_outer_schema.return_value = outer
+
+    event = {
+        "queryStringParameters": None,
+        "requestContext": authorized_request_context(),
+    }
+
+    response = list_irc_census_reports_v1(
+        event,
+        mock_context(),
     )
 
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name=LAST_FIRST_NAME,
-        filters=None,
-        limit=1,
-        cursor="current-cursor",
-        columns=None,
-    )
+    assert response["statusCode"] == 200
+    mock_service.assert_called_once()
 
-    assert len(result.items) == 1
-    assert result.metadata.cursor == "next-cursor"
-    assert result.metadata.has_more is True
 
-    call_kwargs = mock_repo.call_args.kwargs
-
-    assert (
-        call_kwargs["last_first_name"]
-        == LAST_FIRST_NAME
-    )
-
-    assert call_kwargs["page"].limit == 1
-    assert call_kwargs["page"].cursor == "current-cursor"
-
+# =============================================================================
+# SEARCH - SUCCESS
+# =============================================================================
 
 @patch(
-    "domain.services.irc_census_report_service."
-    "irc_census_report_repo.get_irc_census_report_by_id"
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportResponseModel"
 )
-def test_get_irc_census_report_details_custom_sort(mock_repo):
-    mock_repo.return_value = _db_result(
-        items=[SAMPLE_ITEM]
+@patch(
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportListResponseModel"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "search_irc_census_reports"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "LambdaUtils.get_json_body"
+)
+def test_search_irc_census_reports_v1_success(
+    mock_json_body,
+    mock_service,
+    mock_outer_schema,
+    mock_inner_schema,
+):
+    mock_json_body.return_value = {
+        "filters": {},
+        "sort": {},
+        "page": {
+            "limit": 10
+        },
+    }
+
+    results = MagicMock()
+
+    results.items = [
+        {
+            "row_id": 16698,
+            "last_first_name": LAST_FIRST_NAME,
+        }
+    ]
+
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    mock_inner_schema.model_validate.return_value = MagicMock()
+
+    outer = MagicMock()
+
+    outer.model_dump.return_value = {
+        "metadata": {
+            "cursor": None,
+            "hasMore": False,
+        },
+        "data": [
+            {
+                "rowId": 16698,
+                "lastFirstName": LAST_FIRST_NAME,
+            }
+        ],
+    }
+
+    mock_outer_schema.return_value = outer
+
+    event = {
+        "requestContext": authorized_request_context(),
+        "body": "{}",
+        "isBase64Encoded": False,
+    }
+
+    response = search_irc_census_reports_v1(
+        event,
+        mock_context(),
     )
 
-    sort = SortModel(
-        field="last_first_name",
-        order="asc",
+    assert response["statusCode"] == 200
+    mock_service.assert_called_once()
+
+
+# =============================================================================
+# SEARCH - INVALID JSON
+# =============================================================================
+
+@patch(
+    "v1.handlers.irc_census_report."
+    "LambdaUtils.get_json_body"
+)
+def test_search_irc_census_reports_v1_invalid_json(
+    mock_get_json_body,
+):
+    mock_get_json_body.side_effect = json.JSONDecodeError(
+        "Expecting value",
+        "",
+        0,
     )
 
-    result = irc_census_report_service.get_irc_census_report_details(
-        last_first_name=LAST_FIRST_NAME,
-        filters=None,
-        limit=10,
-        cursor=None,
-        columns=None,
-        sort=sort,
+    event = {
+        "requestContext": authorized_request_context(),
+        "body": "{invalid-json",
+        "isBase64Encoded": False,
+    }
+
+    response = search_irc_census_reports_v1(
+        event,
+        mock_context(),
     )
 
-    assert len(result.items) == 1
+    assert response["statusCode"] == 400
 
-    call_kwargs = mock_repo.call_args.kwargs
 
-    assert call_kwargs["sort"] == sort
+# =============================================================================
+# AUTHORIZATION
+# =============================================================================
+
+def test_get_irc_census_report_v1_forbidden():
+    event = {
+        "pathParameters": {
+            "last_first_name": LAST_FIRST_NAME,
+        },
+        "queryStringParameters": None,
+        "requestContext": {
+            "requestId": "test-forbidden",
+            "authorizer": {
+                "lambda": {
+                    "userId": "someone-else"
+                }
+            },
+        },
+    }
+
+    response = get_irc_census_report_v1(
+        event,
+        mock_context(),
+    )
+
+    assert response["statusCode"] == 403
+
+
+def test_list_irc_census_reports_v1_forbidden():
+    event = {
+        "queryStringParameters": None,
+        "requestContext": {
+            "requestId": "test-list-forbidden",
+            "authorizer": {
+                "lambda": {
+                    "userId": "someone-else"
+                }
+            },
+        },
+    }
+
+    response = list_irc_census_reports_v1(
+        event,
+        mock_context(),
+    )
+
+    assert response["statusCode"] == 403
+
+
+# =============================================================================
+# AUTHORIZATION FALLBACK
+# =============================================================================
+
+@patch(
+    "v1.handlers.irc_census_report."
+    "V1IrcCensusReportListResponseModel"
+)
+@patch(
+    "v1.handlers.irc_census_report."
+    "search_irc_census_reports"
+)
+def test_list_irc_census_reports_authorizer_direct_userid(
+    mock_service,
+    mock_outer_schema,
+):
+    """
+    Covers the fallback where userId is directly under authorizer,
+    rather than authorizer.lambda.
+    """
+
+    results = MagicMock()
+    results.items = []
+    results.metadata = mock_metadata()
+
+    mock_service.return_value = results
+
+    outer = MagicMock()
+
+    outer.model_dump.return_value = {
+        "metadata": {},
+        "data": [],
+    }
+
+    mock_outer_schema.return_value = outer
+
+    event = {
+        "queryStringParameters": None,
+        "requestContext": {
+            "requestId": "direct-userid",
+            "authorizer": {
+                "userId": ALLOWED_USER,
+            },
+        },
+    }
+
+    response = list_irc_census_reports_v1(
+        event,
+        mock_context(),
+    )
+
+    assert response["statusCode"] == 200
