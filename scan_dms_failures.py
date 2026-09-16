@@ -1,227 +1,423 @@
 """
-Domain models for IRC Census Report.
+Unit tests for domain.services.irc_census_report_service
 """
 
-from datetime import date
-from typing import List, Optional
+from unittest.mock import MagicMock, patch
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from core.filters import FiltersEnvelope, SortModel
+from core.pagination import PaginationModel
 
-from .metadata import MetadataModel
+from domain.services import irc_census_report_service
 
 
-class IrcCensusReportResponse(BaseModel):
+# =============================================================================
+# TEST DATA
+# =============================================================================
+
+LAST_FIRST_NAME = "Price, Kevin T"
+
+SAMPLE_ITEM = {
+    "row_id": 16698,
+    "my_id": "X83855",
+    "last_first_name": LAST_FIRST_NAME,
+    "prir_name": "",
+    "s_empl_status_cd": "ACT",
+    "hire_dt": "2014-03-01",
+    "reh_dt": "2022-10-01",
+    "term_dt": None,
+    "seniority_dt": "2014-03-01",
+    "term_reason_cd": "",
+    "taxble_entity_id": "525",
+    "locator_cd": "HYBRID",
+    "empl_class_cd": "E1",
+    "pto_accrl_cd": None,
+    "bu_name": None,
+    "dept_num": None,
+    "detl_job_cd": None,
+    "title_desc": "Dir Technology 1",
+    "mgr_name": "Sosa, Marc",
+}
+
+
+def _db_result(items=None, cursor=None, has_more=False):
     """
-    Domain response model for a single IRC Census Report record.
+    Helper that returns the structure expected from the repository.
     """
+    return {
+        "items": items if items is not None else [],
+        "page": {
+            "cursor": cursor,
+            "has_more": has_more,
+        },
+    }
 
-    model_config = ConfigDict(
-        populate_by_name=True,
-        from_attributes=True,
+
+# =============================================================================
+# SEARCH TESTS
+# =============================================================================
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_reports"
+)
+def test_search_irc_census_reports_success(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM],
+        cursor=None,
+        has_more=False,
     )
 
-    row_id: Optional[int] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "row_id",
-            "ROW_ID",
-            "rowid",
-            "rowId",
-        ),
-        serialization_alias="rowId",
+    filters = FiltersEnvelope(filters={})
+
+    result = irc_census_report_service.search_irc_census_reports(
+        filters=filters,
+        sort=None,
+        page=PaginationModel(limit=10),
+        columns=None,
     )
 
-    my_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "my_id",
-            "MY_ID",
-            "myId",
-        ),
-        serialization_alias="myId",
+    assert len(result.items) == 1
+    assert result.items[0].row_id == 16698
+    assert result.items[0].last_first_name == LAST_FIRST_NAME
+
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+    mock_repo.assert_called_once()
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_reports"
+)
+def test_search_irc_census_reports_dict_filters(mock_repo):
+    mock_repo.return_value = _db_result(items=[])
+
+    filters = {
+        "last_first_name": {
+            "eq": LAST_FIRST_NAME
+        }
+    }
+
+    result = irc_census_report_service.search_irc_census_reports(
+        filters=filters,
+        sort=None,
+        page=PaginationModel(limit=10),
+        columns=None,
     )
 
-    last_first_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "last_first_name",
-            "LAST_FIRST_NAME",
-            "lastFirstName",
-        ),
-        serialization_alias="lastFirstName",
-    )
+    assert result.items == []
+    mock_repo.assert_called_once()
 
-    prir_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "prir_name",
-            "PRIR_NAME",
-            "prirName",
-        ),
-        serialization_alias="prirName",
-    )
+    call_kwargs = mock_repo.call_args.kwargs
 
-    s_empl_status_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "s_empl_status_cd",
-            "S_EMPL_STATUS_CD",
-            "sEmplStatusCd",
-        ),
-        serialization_alias="sEmplStatusCd",
-    )
-
-    hire_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "hire_dt",
-            "HIRE_DT",
-            "hireDt",
-        ),
-        serialization_alias="hireDt",
-    )
-
-    reh_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "reh_dt",
-            "REH_DT",
-            "rehDt",
-        ),
-        serialization_alias="rehDt",
-    )
-
-    term_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "term_dt",
-            "TERM_DT",
-            "termDt",
-        ),
-        serialization_alias="termDt",
-    )
-
-    seniority_dt: Optional[date] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "seniority_dt",
-            "SENIORITY_DT",
-            "seniorityDt",
-        ),
-        serialization_alias="seniorityDt",
-    )
-
-    term_reason_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "term_reason_cd",
-            "TERM_REASON_CD",
-            "termReasonCd",
-        ),
-        serialization_alias="termReasonCd",
-    )
-
-    taxble_entity_id: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "taxble_entity_id",
-            "TAXBLE_ENTITY_ID",
-            "taxbleEntityId",
-        ),
-        serialization_alias="taxbleEntityId",
-    )
-
-    locator_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "locator_cd",
-            "LOCATOR_CD",
-            "locatorCd",
-        ),
-        serialization_alias="locatorCd",
-    )
-
-    empl_class_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "empl_class_cd",
-            "EMPL_CLASS_CD",
-            "emplClassCd",
-        ),
-        serialization_alias="emplClassCd",
-    )
-
-    pto_accrl_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "pto_accrl_cd",
-            "PTO_ACCRL_CD",
-            "ptoAccrlCd",
-        ),
-        serialization_alias="ptoAccrlCd",
-    )
-
-    bu_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "bu_name",
-            "BU_NAME",
-            "buName",
-        ),
-        serialization_alias="buName",
-    )
-
-    dept_num: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "dept_num",
-            "DEPT_NUM",
-            "deptNum",
-        ),
-        serialization_alias="deptNum",
-    )
-
-    detl_job_cd: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "detl_job_cd",
-            "DETL_JOB_CD",
-            "detlJobCd",
-        ),
-        serialization_alias="detlJobCd",
-    )
-
-    title_desc: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "title_desc",
-            "TITLE_DESC",
-            "titleDesc",
-        ),
-        serialization_alias="titleDesc",
-    )
-
-    mgr_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "mgr_name",
-            "MGR_NAME",
-            "mgrName",
-        ),
-        serialization_alias="mgrName",
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
     )
 
 
-class IrcCensusReportSearchServiceResponse(BaseModel):
-    """
-    Internal service response for IRC Census Report search/list/detail calls.
-    """
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_reports"
+)
+def test_search_irc_census_reports_none_filters(mock_repo):
+    mock_repo.return_value = _db_result(items=[])
 
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        populate_by_name=True,
-        from_attributes=True,
+    result = irc_census_report_service.search_irc_census_reports(
+        filters=None,
+        sort=None,
+        page=None,
+        columns=None,
     )
 
-    items: List[IrcCensusReportResponse]
-    metadata: MetadataModel
+    assert result.items == []
+    mock_repo.assert_called_once()
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_reports"
+)
+def test_search_irc_census_reports_custom_sort(mock_repo):
+    mock_repo.return_value = _db_result(items=[])
+
+    sort = SortModel(
+        field="last_first_name",
+        order="asc",
+    )
+
+    result = irc_census_report_service.search_irc_census_reports(
+        filters=None,
+        sort=sort,
+        page=PaginationModel(limit=10),
+        columns=None,
+    )
+
+    assert result.items == []
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert call_kwargs["sort"] == sort
+
+
+# =============================================================================
+# DETAIL TESTS
+# =============================================================================
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_success(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM],
+        cursor=None,
+        has_more=False,
+    )
+
+    filters = FiltersEnvelope(filters={})
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name=LAST_FIRST_NAME,
+        filters=filters,
+        limit=10,
+        cursor=None,
+        columns=None,
+    )
+
+    assert len(result.items) == 1
+
+    item = result.items[0]
+
+    assert item.row_id == 16698
+    assert item.my_id == "X83855"
+    assert item.last_first_name == LAST_FIRST_NAME
+    assert item.title_desc == "Dir Technology 1"
+    assert item.mgr_name == "Sosa, Marc"
+
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+    mock_repo.assert_called_once()
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert (
+        call_kwargs["last_first_name"]
+        == LAST_FIRST_NAME
+    )
+
+    # row_id should NOT be the detail lookup parameter anymore.
+    assert "row_id" not in call_kwargs
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_not_found(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[],
+        cursor=None,
+        has_more=False,
+    )
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name="Does Not Exist",
+        filters=None,
+        limit=10,
+        cursor=None,
+        columns=None,
+    )
+
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+
+    mock_repo.assert_called_once()
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert (
+        call_kwargs["last_first_name"]
+        == "Does Not Exist"
+    )
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_missing_key(mock_repo):
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name="",
+        filters=None,
+        limit=10,
+        cursor=None,
+        columns=None,
+    )
+
+    assert result.items == []
+    assert result.metadata.cursor is None
+    assert result.metadata.has_more is False
+    assert result.metadata.applied_filters is None
+
+    # Repository must not be called if the name is missing.
+    mock_repo.assert_not_called()
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_dict_filters(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM],
+        cursor=None,
+        has_more=False,
+    )
+
+    filters = {
+        "s_empl_status_cd": {
+            "eq": "ACT"
+        }
+    }
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name=LAST_FIRST_NAME,
+        filters=filters,
+        limit=10,
+        cursor=None,
+        columns=None,
+    )
+
+    assert len(result.items) == 1
+    assert result.items[0].last_first_name == LAST_FIRST_NAME
+
+    mock_repo.assert_called_once()
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+    assert (
+        call_kwargs["last_first_name"]
+        == LAST_FIRST_NAME
+    )
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_none_filters(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM],
+        cursor=None,
+        has_more=False,
+    )
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name=LAST_FIRST_NAME,
+        filters=None,
+        limit=10,
+        cursor=None,
+        columns=None,
+    )
+
+    assert len(result.items) == 1
+    assert result.items[0].row_id == 16698
+    assert result.items[0].last_first_name == LAST_FIRST_NAME
+
+    mock_repo.assert_called_once()
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert isinstance(
+        call_kwargs["filters"],
+        FiltersEnvelope,
+    )
+
+    assert (
+        call_kwargs["last_first_name"]
+        == LAST_FIRST_NAME
+    )
+
+
+# =============================================================================
+# DETAIL PAGINATION / SORT
+# =============================================================================
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_pagination(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM],
+        cursor="next-cursor",
+        has_more=True,
+    )
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name=LAST_FIRST_NAME,
+        filters=None,
+        limit=1,
+        cursor="current-cursor",
+        columns=None,
+    )
+
+    assert len(result.items) == 1
+    assert result.metadata.cursor == "next-cursor"
+    assert result.metadata.has_more is True
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert (
+        call_kwargs["last_first_name"]
+        == LAST_FIRST_NAME
+    )
+
+    assert call_kwargs["page"].limit == 1
+    assert call_kwargs["page"].cursor == "current-cursor"
+
+
+@patch(
+    "domain.services.irc_census_report_service."
+    "irc_census_report_repo.get_irc_census_report_by_id"
+)
+def test_get_irc_census_report_details_custom_sort(mock_repo):
+    mock_repo.return_value = _db_result(
+        items=[SAMPLE_ITEM]
+    )
+
+    sort = SortModel(
+        field="last_first_name",
+        order="asc",
+    )
+
+    result = irc_census_report_service.get_irc_census_report_details(
+        last_first_name=LAST_FIRST_NAME,
+        filters=None,
+        limit=10,
+        cursor=None,
+        columns=None,
+        sort=sort,
+    )
+
+    assert len(result.items) == 1
+
+    call_kwargs = mock_repo.call_args.kwargs
+
+    assert call_kwargs["sort"] == sort
